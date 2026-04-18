@@ -1,0 +1,31 @@
+{
+  "llm": {
+    "baseUrl": "http://127.0.0.1:3888/v1",
+    "apiKey": "replace-with-your-api-key",
+    "model": "replace-with-your-model",
+    "fallbacks": []
+  },
+  "runtime": {
+    "worker": {
+      "idleTtlMs": 900000,
+      "idleSweepMs": 60000,
+      "gatewayStartTimeoutMs": 120000,
+      "runStallTimeoutMs": 120000
+    },
+    "executor": {
+      "reportGraceMs": 180000,
+      "deliveryTimeoutMs": 90000,
+      "toolDeliveryTimeoutMs": 240000
+    },
+    "localDev": {
+      "toolMaxSteps": 12,
+      "sourceTaskToolMaxSteps": 20,
+      "sourceTaskLocalExplorationSoftLimit": 6,
+      "forceSummaryOnBudgetExhausted": true,
+      "sourceTaskForceSummaryOnBudgetExhausted": true
+    },
+    "codex": {
+      "launchHealthcheckTimeoutMs": 20000
+    }
+  }
+}

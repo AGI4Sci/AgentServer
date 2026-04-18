@@ -1,0 +1,119 @@
+import type { BackendType } from '../../core/runtime/backend-catalog.js';
+import type { RuntimeEventProtocolVersion } from './runtime-event-contract.js';
+
+export interface SessionInput {
+  task: string;
+  context: string;
+}
+
+export interface SessionUsage {
+  input: number;
+  output: number;
+  total?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+}
+
+export interface LocalDevPolicyHint {
+  isSourceTask?: boolean;
+  maxSteps?: number;
+  forceSummaryOnBudgetExhausted?: boolean;
+}
+
+export type SessionOutput =
+  | {
+      success: true;
+      result: string;
+      error?: undefined;
+      usage?: SessionUsage;
+    }
+  | {
+      success: false;
+      error: string;
+      result?: undefined;
+      usage?: SessionUsage;
+    };
+
+export type SessionClientType = BackendType;
+export type RuntimeSessionMode = 'ephemeral' | 'persistent';
+
+export interface RuntimeEventBase {
+  protocolVersion?: RuntimeEventProtocolVersion;
+  raw?: unknown;
+}
+
+export interface RunSessionOptions {
+  backend?: SessionClientType;
+  agentId: string;
+  teamId: string;
+  projectScope?: string;
+  requestId?: string;
+  sessionKey?: string;
+  messageId?: string;
+  sourceClientId?: string | null;
+  isPrivate?: boolean;
+  cwd?: string;
+  timeoutMs?: number;
+  model?: string;
+  modelProvider?: string;
+  modelName?: string;
+  sessionMode?: RuntimeSessionMode;
+  persistentKey?: string;
+  toolMode?: 'auto' | 'none';
+  localDevPolicy?: LocalDevPolicyHint;
+}
+
+export type SessionStreamEvent =
+  | ({
+      type: 'text-delta';
+      text: string;
+    } & RuntimeEventBase)
+  | ({
+      type: 'status';
+      status: 'starting' | 'running' | 'waiting_permission' | 'completed' | 'failed';
+      message?: string;
+    } & RuntimeEventBase)
+  | ({
+      type: 'tool-call';
+      toolName: string;
+      detail?: string;
+    } & RuntimeEventBase)
+  | ({
+      type: 'tool-result';
+      toolName: string;
+      detail?: string;
+      output?: string;
+    } & RuntimeEventBase)
+  | ({
+      type: 'permission-request';
+      requestId: string;
+      toolName: string;
+      detail?: string;
+    } & RuntimeEventBase)
+  | ({
+      type: 'error';
+      error: string;
+    } & RuntimeEventBase)
+  | ({
+      type: 'result';
+      output: SessionOutput;
+      usage?: SessionUsage;
+    } & RuntimeEventBase);
+
+export interface SessionRunner {
+  run(input: SessionInput, options: RunSessionOptions): Promise<SessionOutput>;
+  runStream(
+    input: SessionInput,
+    options: RunSessionOptions,
+    handlers: {
+      onEvent: (event: SessionStreamEvent) => void;
+    },
+  ): Promise<SessionOutput>;
+}
+
+export function formatRuntimeError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.stack ? `${error.message}\n\n${error.stack}` : error.message;
+  }
+  return String(error);
+}

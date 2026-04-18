@@ -1,0 +1,37 @@
+{
+  "name": "@agi4sci/agent-server",
+  "version": "0.1.0",
+  "description": "Standalone AgentServer runtime and backend adapter layer extracted from OpenTeam Studio.",
+  "type": "module",
+  "main": "dist/server/index.js",
+  "types": "dist/server/index.d.ts",
+  "scripts": {
+    "dev": "tsx watch server/index.ts",
+    "dev:8080": "PORT=8080 npm run dev",
+    "build": "tsc",
+    "start": "node dist/server/index.js",
+    "runtime-supervisor": "node --import tsx server/runtime-supervisor/index.ts",
+    "smoke:agent-server": "node --import tsx scripts/smoke-agent-server.ts",
+    "test": "node --import tsx --test tests/*.test.ts"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.14.0",
+    "hono": "^4.12.0",
+    "uuid": "^10.0.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/uuid": "^10.0.0",
+    "@types/ws": "^8.5.0",
+    "jsdom": "^29.0.1",
+    "playwright": "^1.58.2",
+    "tsx": "^4.21.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0",
+    "ws": "^8.20.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

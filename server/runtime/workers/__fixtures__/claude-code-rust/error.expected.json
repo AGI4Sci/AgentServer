@@ -1,0 +1,15 @@
+[
+  {
+    "protocolVersion": "v1",
+    "type": "error",
+    "error": "Claude Code Rust process exited before producing a result."
+  },
+  {
+    "protocolVersion": "v1",
+    "type": "result",
+    "output": {
+      "success": false,
+      "error": "Claude Code Rust process exited before producing a result."
+    }
+  }
+]

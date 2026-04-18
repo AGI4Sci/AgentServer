@@ -1,0 +1,27 @@
+[
+  {
+    "protocolVersion": "v1",
+    "type": "text-delta",
+    "text": "I will inspect the directory.\n"
+  },
+  {
+    "protocolVersion": "v1",
+    "type": "tool-call",
+    "toolName": "list_dir",
+    "detail": "path=."
+  },
+  {
+    "protocolVersion": "v1",
+    "type": "tool-result",
+    "toolName": "list_dir",
+    "output": "README.md\npackage.json"
+  },
+  {
+    "protocolVersion": "v1",
+    "type": "result",
+    "output": {
+      "success": true,
+      "result": "The current directory contains README.md and package.json."
+    }
+  }
+]

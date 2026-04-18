@@ -1,0 +1,9 @@
+[
+  {
+    "protocolVersion": "v1",
+    "type": "permission-request",
+    "requestId": "perm-1",
+    "toolName": "list_dir",
+    "detail": "Need permission to inspect workspace."
+  }
+]

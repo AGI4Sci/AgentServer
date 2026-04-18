@@ -1,0 +1,4 @@
+{"type":"text-delta","text":"I will inspect the directory.\n"}
+{"type":"tool-call","toolName":"list_directory","detail":"path=."}
+{"type":"tool-result","toolName":"list_directory","output":"README.md\npackage.json"}
+{"type":"result","output":"The current directory contains README.md and package.json."}

@@ -1,0 +1,15 @@
+[
+  {
+    "protocolVersion": "v1",
+    "type": "error",
+    "error": "OpenClaw gateway timed out."
+  },
+  {
+    "protocolVersion": "v1",
+    "type": "result",
+    "output": {
+      "success": false,
+      "error": "OpenClaw gateway timed out."
+    }
+  }
+]

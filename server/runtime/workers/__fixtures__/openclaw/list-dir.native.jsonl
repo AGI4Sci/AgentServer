@@ -1,0 +1,4 @@
+{"event":"assistant.delta","text":"I will inspect the directory.\n"}
+{"event":"tool.call","toolName":"list_directory","args":{"path":"."}}
+{"event":"tool.result","toolName":"list_directory","output":"README.md\npackage.json"}
+{"event":"run.completed","output":"The current directory contains README.md and package.json."}
