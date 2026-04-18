@@ -270,6 +270,25 @@ AGENT_SERVER_SSH_SMOKE_HOSTS=pjlab,pjlab_gpu npm run smoke:ssh-workers
 
 `smoke:tool-executor` validates the local routed executor with server, backend-server, SSH, and client-worker routes using controlled test workers. `smoke:ssh-workers` talks to real SSH hosts when configured. It confirms that workspace tools execute on the SSH machine while network tools can still be proxied by `backend-server` and written back to the SSH workspace.
 
+Workers may also carry environment variables:
+
+```jsonc
+{
+  "id": "pjlab-cpu",
+  "kind": "ssh",
+  "host": "pjlab",
+  "allowedRoots": ["/tmp"],
+  "capabilities": ["filesystem", "shell", "network"],
+  "env": {
+    "http_proxy": "http://httpproxy-headless.kubebrain.svc.pjlab.local:3128",
+    "https_proxy": "http://httpproxy-headless.kubebrain.svc.pjlab.local:3128",
+    "no_proxy": "10.0.0.0/8,100.96.0.0/12,.pjlab.org.cn"
+  }
+}
+```
+
+This keeps proxy/VPN settings attached to the worker that needs them. A CPU SSH worker with `network` capability and proxy `env` can run `web_fetch` directly; a GPU worker without network can keep routing network primitives to `backend-server` or another network-capable worker.
+
 For Mac / cloud backend / SSH GPU layouts, see [Client Worker 与 Tool Routing](./client-worker.md). The short version is: backend is the thinker, workspace owns data/results, workers execute tools, and tool routing chooses primary/fallback workers per tool call.
 
 The SDK exports the route planning helper:

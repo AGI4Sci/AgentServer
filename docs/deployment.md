@@ -107,12 +107,17 @@ For explicit per-worker settings, pass JSON:
 
 ```bash
 AGENT_SERVER_SSH_SMOKE_WORKERS='[
-  {
-    "id": "pjlab-cpu",
-    "host": "pjlab",
-    "root": "/tmp",
-    "capabilities": ["filesystem", "shell"]
-  },
+        {
+          "id": "pjlab-cpu",
+          "host": "pjlab",
+          "root": "/tmp",
+          "capabilities": ["filesystem", "shell", "network"],
+          "env": {
+            "http_proxy": "http://httpproxy-headless.kubebrain.svc.pjlab.local:3128",
+            "https_proxy": "http://httpproxy-headless.kubebrain.svc.pjlab.local:3128",
+            "no_proxy": "10.0.0.0/8,100.96.0.0/12,.pjlab.org.cn"
+          }
+        },
   {
     "id": "pjlab-gpu",
     "host": "pjlab_gpu",
@@ -122,7 +127,32 @@ AGENT_SERVER_SSH_SMOKE_WORKERS='[
 ]' npm run smoke:ssh-workers
 ```
 
-The smoke runs `run_command`, `write_file`, and `read_file` on each SSH worker, then routes `web_fetch` to `backend-server` and writes the network result back into the SSH workspace artifact directory. If no SSH smoke environment variable is set, the script prints `SKIPPED` and exits successfully.
+The smoke runs `run_command`, `write_file`, and `read_file` on each SSH worker, then routes `web_fetch` to `backend-server` and writes the network result back into the SSH workspace artifact directory. If an SSH worker declares `network`, the smoke also runs a direct SSH `web_fetch` through that worker. If no SSH smoke environment variable is set, the script prints `SKIPPED` and exits successfully.
+
+Worker-specific environment variables can be configured with `env`. AgentServer injects them when executing tools through `server`, `ssh`, or `client-worker` workers. This is the preferred way to make a CPU worker act as a network worker when the cluster requires proxy variables:
+
+```jsonc
+{
+  "id": "pjlab-cpu",
+  "kind": "ssh",
+  "host": "pjlab",
+  "allowedRoots": ["/tmp"],
+  "capabilities": ["filesystem", "shell", "network"],
+  "env": {
+    "http_proxy": "http://httpproxy-headless.kubebrain.svc.pjlab.local:3128",
+    "https_proxy": "http://httpproxy-headless.kubebrain.svc.pjlab.local:3128",
+    "no_proxy": "10.0.0.0/8,100.96.0.0/12,.pjlab.org.cn"
+  }
+}
+```
+
+The PJLab helper script:
+
+```bash
+source <(curl -sSL http://deploy.i.h.pjlab.org.cn/infra/scripts/setup_proxy.sh)
+```
+
+sets exactly these shell variables for the current shell. For AgentServer, put equivalent values in worker `env` so every routed tool call receives the same proxy configuration.
 
 The client-worker executor calls HTTP `POST /tool-call` on the configured endpoint. The request includes `workspace`, `cwd`, `toolName`, and `args`; the response should be JSON with `{ "ok": boolean, "output": string }`.
 

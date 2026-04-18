@@ -191,6 +191,64 @@ test('executeRoutedToolCall executes workspace tools on an ssh worker', async ()
   });
 });
 
+test('executeRoutedToolCall injects worker env into ssh tools', async () => {
+  await withTempWorkspace(async (root) => {
+    const fakeSsh = join(root, 'fake-ssh.sh');
+    await writeFile(fakeSsh, [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      'bash -s',
+      '',
+    ].join('\n'), 'utf-8');
+    await chmod(fakeSsh, 0o755);
+    const previousSshBin = process.env.AGENT_SERVER_SSH_BIN;
+    process.env.AGENT_SERVER_SSH_BIN = fakeSsh;
+    try {
+      const workspace: WorkspaceSpec = {
+        id: 'cpu-network',
+        root,
+        ownerWorker: 'pjlab-cpu',
+      };
+      const workers: WorkerProfile[] = [
+        {
+          id: 'backend-server',
+          kind: 'backend-server',
+          capabilities: ['network', 'metadata'],
+        },
+        {
+          id: 'pjlab-cpu',
+          kind: 'ssh',
+          host: 'pjlab',
+          allowedRoots: [root],
+          capabilities: ['filesystem', 'shell', 'network'],
+          env: {
+            http_proxy: 'http://proxy.example:3128',
+          },
+        },
+      ];
+
+      const result = await executeRoutedToolCall({
+        toolName: 'run_command',
+        toolArgs: {
+          command: 'printf "%s" "$http_proxy"',
+        },
+        workspace,
+        workers,
+      });
+
+      assert.equal(result.ok, true);
+      assert.equal(result.workerId, 'pjlab-cpu');
+      assert.match(result.output, /http:\/\/proxy\.example:3128/);
+    } finally {
+      if (previousSshBin === undefined) {
+        delete process.env.AGENT_SERVER_SSH_BIN;
+      } else {
+        process.env.AGENT_SERVER_SSH_BIN = previousSshBin;
+      }
+    }
+  });
+});
+
 test('executeRoutedToolCall creates a missing ssh workspace root before executing tools', async () => {
   await withTempWorkspace(async (root) => {
     const fakeSsh = join(root, 'fake-ssh.sh');

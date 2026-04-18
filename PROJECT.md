@@ -27,6 +27,7 @@
 - `T012`：Agent SDK 化（已完成）：整理包根 public SDK 入口，提供 createAgentClient / runText / runTask / backend capabilities 等薄接口；最近更新 `2026-04-18`
 - `T025`：最终 Tool Routing 四元模型（已完成）：以 `backend / workspace / worker / route` 作为唯一模型，替换旧 placement/profile 设计；最近更新 `2026-04-18`
 - `T033`：真实 SSH worker smoke 脚本（已完成）：将 CPU/GPU SSH 节点实测固化为可重复的 `smoke:ssh-workers`，覆盖 shell、文件读写和 backend 网络代理写回；最近更新 `2026-04-19`
+- `T034`：worker env/proxy 注入（已完成）：支持在 worker 配置中声明代理环境变量，让 pjlab CPU worker 可作为 network worker 使用；最近更新 `2026-04-19`
 
 ---
 
@@ -1056,3 +1057,36 @@
 
 #### Takeaway
 - 真实节点验证现在不是一次性手工结论，而是可以随着 SSH 配置、workspace root 和 worker routing 变化重复运行的工程检查。
+
+---
+
+### T034
+
+#### 目标说明
+- 将 pjlab CPU 节点需要 proxy/vpn shell 环境变量的发现沉淀到 AgentServer worker 模型中。
+- 让 worker 自己声明执行工具所需的环境变量，而不是把 `source setup_proxy.sh` 写进每个任务命令。
+- 支持 CPU worker 作为 network worker，GPU worker 继续保持无网 workspace worker。
+
+#### 成功标准
+- `WorkerProfile` 支持 `env`。
+- 配置解析保留 worker `env`。
+- `server` / `ssh` / `client-worker` executor 执行工具时携带 worker `env`。
+- `check:deployment` 检查 worker env 变量名是否合法。
+- `smoke:ssh-workers` 支持通过 JSON 配置传入 `env`。
+- `smoke:ssh-workers` 对声明 `network` capability 的 SSH worker 增加直接 `web_fetch` 验证。
+- 文档说明 pjlab proxy 脚本与 worker `env` 的关系。
+
+#### TODO
+- [x] 在任务板登记 T034。
+- [x] 扩展 `WorkerProfile.env`。
+- [x] 更新配置解析和部署检查。
+- [x] 更新 routed executor 和 client-worker 服务。
+- [x] 更新 SSH smoke 和文档。
+- [x] 用 pjlab CPU proxy env 跑真实 network worker smoke。
+- [x] 跑完整验证。
+
+#### 异常发现
+- `source setup_proxy.sh` 只影响当前 shell；AgentServer 每次 SSH tool-call 都是新的远端 shell，所以需要把等价 proxy 值放进 worker `env`，由 executor 每次注入。
+
+#### Takeaway
+- worker 不只是“在哪台机器执行”，还可以携带这台机器执行工具所需的最小运行环境。这样 CPU 有网、GPU 无网的集群差异可以通过 routing 和 env 配置表达清楚。

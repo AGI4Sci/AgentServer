@@ -282,12 +282,24 @@ function buildSshArgs(worker: WorkerProfile): string[] {
   return sshArgs;
 }
 
+function workerEnvScript(worker: WorkerProfile): string[] {
+  return Object.entries(worker.env || {}).map(([key, value]) => {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+      throw new Error(`Worker ${worker.id} has invalid env var name: ${key}`);
+    }
+    return `export ${key}=${shellQuote(value)}`;
+  });
+}
+
 async function executeSshPrimitiveCall(
   worker: WorkerProfile,
   call: LocalDevPrimitiveCall,
   cwd: string,
 ): Promise<LocalDevPrimitiveResult> {
-  const script = buildSshPrimitiveScript(call, cwd);
+  const script = [
+    ...workerEnvScript(worker),
+    buildSshPrimitiveScript(call, cwd),
+  ].join('\n');
   const sshBin = process.env.AGENT_SERVER_SSH_BIN?.trim() || 'ssh';
   const sshArgs = buildSshArgs(worker);
   return await new Promise((resolve, reject) => {
@@ -342,6 +354,7 @@ async function executeClientWorkerPrimitiveCall(args: {
       cwd: args.cwd,
       toolName: args.call.toolName,
       args: args.call.args,
+      env: args.worker.env || {},
     }),
     signal: AbortSignal.timeout(CLIENT_WORKER_TIMEOUT_MS),
   });
@@ -398,7 +411,10 @@ async function executeWorkerPrimitiveCall(args: {
       cwd,
     });
   }
-  return await executeLocalDevPrimitiveCall(args.call, { cwd });
+  return await executeLocalDevPrimitiveCall(args.call, {
+    cwd,
+    env: args.worker.env,
+  });
 }
 
 async function writeNetworkToolArtifact(args: {

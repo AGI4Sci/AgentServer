@@ -894,11 +894,14 @@ export function extractAndNormalizeLocalDevPrimitiveCall(text: string, cwd: stri
   };
 }
 
-async function runCommand(command: string, cwd: string): Promise<LocalDevPrimitiveResult> {
+async function runCommand(command: string, cwd: string, env?: Record<string, string>): Promise<LocalDevPrimitiveResult> {
   return await new Promise((resolvePromise) => {
     const child = spawn('/bin/zsh', ['-lc', command], {
       cwd,
-      env: process.env,
+      env: {
+        ...process.env,
+        ...(env || {}),
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
@@ -986,7 +989,7 @@ async function fetchWebSearchPage(query: string): Promise<{ provider: string; ur
 
 export async function executeLocalDevPrimitiveCall(
   call: LocalDevPrimitiveCall,
-  options: { cwd: string },
+  options: { cwd: string; env?: Record<string, string> },
 ): Promise<LocalDevPrimitiveResult> {
   const cwd = resolveCallCwd(call, options.cwd);
   if (call.toolName === 'read_file') {
@@ -1045,6 +1048,7 @@ export async function executeLocalDevPrimitiveCall(
     const result = await runCommand(
       `rg -n --hidden --no-ignore-vcs --glob '!node_modules' --glob '!.git' ${JSON.stringify(pattern)} ${JSON.stringify(targetPath)}`,
       cwd,
+      options.env,
     );
     return result;
   }
@@ -1055,7 +1059,7 @@ export async function executeLocalDevPrimitiveCall(
       throw new Error('run_command requires <command>.');
     }
     assertCommandAllowed(command);
-    return await runCommand(command, cwd);
+    return await runCommand(command, cwd, options.env);
   }
 
   if (call.toolName === 'apply_patch') {
@@ -1064,7 +1068,7 @@ export async function executeLocalDevPrimitiveCall(
       throw new Error('apply_patch requires <patch>.');
     }
     const escapedPatch = patch.replace(/'/g, `'\"'\"'`);
-    return await runCommand(`printf '%s' '${escapedPatch}' | patch -p0`, cwd);
+    return await runCommand(`printf '%s' '${escapedPatch}' | patch -p0`, cwd, options.env);
   }
 
   if (call.toolName === 'web_search') {
@@ -1097,12 +1101,12 @@ export async function executeLocalDevPrimitiveCall(
     if (!url) {
       throw new Error('browser_open requires <url>.');
     }
-    return await runCommand(`open -a "Microsoft Edge" ${JSON.stringify(url)}`, cwd);
+    return await runCommand(`open -a "Microsoft Edge" ${JSON.stringify(url)}`, cwd, options.env);
   }
 
   if (call.toolName === 'browser_activate') {
     const app = call.args.app?.trim() || 'Microsoft Edge';
-    return await runCommand(`osascript -e ${JSON.stringify(`tell application "${app}" to activate`)}`, cwd);
+    return await runCommand(`osascript -e ${JSON.stringify(`tell application "${app}" to activate`)}`, cwd, options.env);
   }
 
   throw new Error(`Unsupported primitive: ${call.toolName}`);

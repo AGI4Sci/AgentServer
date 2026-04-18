@@ -42,6 +42,10 @@ function isValidHttpEndpoint(endpoint: string): boolean {
   }
 }
 
+function isValidEnvName(name: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
+}
+
 const config = loadOpenTeamConfig();
 const enabled = parseEnabledBackends();
 const backendBinDir = getManagedBackendBinDir();
@@ -100,6 +104,11 @@ for (const workspace of config.runtime.workspace.workspaces) {
 }
 
 for (const worker of config.runtime.workspace.workers) {
+  for (const key of Object.keys(worker.env || {})) {
+    if (!isValidEnvName(key)) {
+      errors.push(`worker ${worker.id} env var name is invalid: ${key}`);
+    }
+  }
   if ((worker.kind === 'server' || worker.kind === 'ssh' || worker.kind === 'client-worker') && (worker.allowedRoots || []).length === 0) {
     errors.push(`worker ${worker.id} (${worker.kind}) must declare allowedRoots`);
   }

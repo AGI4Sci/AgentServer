@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { executeRoutedToolCall } from '../server/runtime/tool-executor.js';
-import type { WorkerCapability, WorkerProfile, WorkspaceSpec } from '../core/runtime/tool-routing.js';
+import type { ToolRoutingPolicy, WorkerCapability, WorkerProfile, WorkspaceSpec } from '../core/runtime/tool-routing.js';
 
 interface SmokeWorkerConfig {
   id: string;
@@ -10,6 +10,7 @@ interface SmokeWorkerConfig {
   identityFile?: string;
   root?: string;
   capabilities?: WorkerCapability[];
+  env?: Record<string, string>;
 }
 
 function parseWorkers(): SmokeWorkerConfig[] {
@@ -50,6 +51,7 @@ function workerProfile(config: SmokeWorkerConfig): WorkerProfile {
     identityFile: config.identityFile,
     allowedRoots: [config.root || '/tmp'],
     capabilities: config.capabilities || ['filesystem', 'shell'],
+    env: config.env,
   };
 }
 
@@ -58,6 +60,7 @@ async function runTool(args: {
   workers: WorkerProfile[];
   toolName: string;
   toolArgs?: Record<string, string>;
+  policy?: ToolRoutingPolicy;
 }): Promise<void> {
   const result = await executeRoutedToolCall(args);
   const attemptSummary = result.attempts.map((attempt) => `${attempt.workerId}:${attempt.status}`).join(',');
@@ -129,6 +132,21 @@ async function runWorkerSmoke(config: SmokeWorkerConfig): Promise<void> {
       path: 'hello.txt',
     },
   });
+  if ((config.capabilities || []).includes('network')) {
+    await runTool({
+      workspace,
+      workers,
+      toolName: 'web_fetch',
+      toolArgs: {
+        url: 'https://www.baidu.com',
+      },
+      policy: {
+        default: {
+          primary: config.id,
+        },
+      },
+    });
+  }
   await runTool({
     workspace,
     workers,

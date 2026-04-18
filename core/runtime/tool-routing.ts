@@ -33,6 +33,7 @@ export interface WorkerProfile {
   identityFile?: string;
   endpoint?: string;
   authToken?: string;
+  env?: Record<string, string>;
 }
 
 export interface ToolRouteTarget {

@@ -24,6 +24,7 @@ export interface ClientWorkerToolCallRequest {
   cwd?: string;
   toolName?: LocalDevPrimitiveCall['toolName'];
   args?: Record<string, string>;
+  env?: Record<string, string>;
 }
 
 export interface ClientWorkerService {
@@ -111,6 +112,9 @@ function normalizeToolCallPayload(payload: unknown): ClientWorkerToolCallRequest
     ...(record.args && typeof record.args === 'object' && !Array.isArray(record.args)
       ? { args: Object.fromEntries(Object.entries(record.args).map(([key, value]) => [key, String(value ?? '')])) }
       : {}),
+    ...(record.env && typeof record.env === 'object' && !Array.isArray(record.env)
+      ? { env: Object.fromEntries(Object.entries(record.env).map(([key, value]) => [key, String(value ?? '')])) }
+      : {}),
   };
 }
 
@@ -134,7 +138,10 @@ async function handleToolCall(
   const result: LocalDevPrimitiveResult = await executeLocalDevPrimitiveCall({
     toolName: payload.toolName,
     args: payload.args || {},
-  }, { cwd });
+  }, {
+    cwd,
+    env: payload.env,
+  });
   writeJson(response, result.ok ? 200 : 500, result);
 }
 

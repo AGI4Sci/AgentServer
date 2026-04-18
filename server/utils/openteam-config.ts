@@ -410,6 +410,13 @@ function normalizeWorkerProfiles(input: unknown): WorkerProfile[] {
     const capabilities = Array.isArray(entry.capabilities)
       ? entry.capabilities.map(normalizeWorkerCapability).filter((item): item is WorkerCapability => Boolean(item))
       : [];
+    const env = isRecord(entry.env)
+      ? Object.fromEntries(
+        Object.entries(entry.env)
+          .map(([key, value]) => [key.trim(), String(value ?? '')])
+          .filter(([key]) => Boolean(key)),
+      )
+      : null;
     workers.set(id, {
       id,
       kind,
@@ -421,6 +428,7 @@ function normalizeWorkerProfiles(input: unknown): WorkerProfile[] {
       ...(typeof entry.identityFile === 'string' && entry.identityFile.trim() ? { identityFile: entry.identityFile.trim() } : {}),
       ...(typeof entry.endpoint === 'string' && entry.endpoint.trim() ? { endpoint: entry.endpoint.trim() } : {}),
       ...(typeof entry.authToken === 'string' && entry.authToken.trim() ? { authToken: entry.authToken.trim() } : {}),
+      ...(env && Object.keys(env).length > 0 ? { env } : {}),
     });
   }
   return [...workers.values()];
