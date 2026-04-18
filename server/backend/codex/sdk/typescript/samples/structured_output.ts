@@ -2,7 +2,7 @@
 
 import { Codex } from "@openai/codex-sdk";
 
-import { codexPathOverride } from "./helpers.js";
+import { codexPathOverride } from "./helpers.ts";
 
 const codex = new Codex({ codexPathOverride: codexPathOverride() });
 

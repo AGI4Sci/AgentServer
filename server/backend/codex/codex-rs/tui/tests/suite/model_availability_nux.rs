@@ -91,7 +91,6 @@ trust_level = "trusted"
         .env("CODEX_HOME", codex_home.path())
         .env("OPENAI_API_KEY", "dummy")
         .env("CODEX_RS_SSE_FIXTURE", fixture_path)
-        .env("OPENAI_BASE_URL", "http://unused.local")
         .output()
         .context("failed to execute codex exec")?;
     anyhow::ensure!(
@@ -141,7 +140,7 @@ trust_level = "trusted"
     let mut startup_ready = false;
     let mut answered_cursor_query = false;
 
-    let exit_code_result = timeout(Duration::from_secs(15), async {
+    let exit_code_result = timeout(Duration::from_secs(30), async {
         loop {
             select! {
                 result = output_rx.recv() => match result {

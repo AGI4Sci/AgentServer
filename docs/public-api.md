@@ -8,11 +8,18 @@ For in-process SDK usage, set `OPENTEAM_CONFIG_PATH` before importing the packag
 
 Backend ids are stable public inputs for `runTask`.
 
+There are two related backend concepts:
+
+- **currently registered backend ids**: what the runtime catalog can launch today.
+- **strategic agent backends**: the first-class long-term orchestration set, currently planned as Codex, Claude Code, Gemini, and the self-hosted agent.
+
 ```ts
 import {
   BACKEND_CATALOG,
   createAgentClient,
   getBackendCapabilities,
+  listRegisteredStrategicBackendIds,
+  listStrategicAgentBackends,
   listSupportedBackends,
 } from '@agi4sci/agent-server';
 
@@ -37,9 +44,26 @@ const caps = getBackendCapabilities('codex');
 if (caps.interrupt) {
   // Enable UI affordances that depend on interrupt support.
 }
+
+console.log(listStrategicAgentBackends());
+// [ 'codex', 'claude-code', 'gemini', 'self-hosted-agent' ]
+
+console.log(listRegisteredStrategicBackendIds());
+// Runtime-registered strategic ids today, for example:
+// [ 'openteam_agent', 'claude-code', 'codex' ]
 ```
 
 Use capabilities for advanced UI or routing decisions. For ordinary task execution, changing only `agent.backend` is enough.
+
+Strategic backend planning should use tier/capability metadata rather than hard-coded backend-name branching:
+
+```ts
+type BackendTier = 'strategic' | 'experimental' | 'compatibility' | 'legacy';
+
+type StrategicBackend = 'codex' | 'claude-code' | 'gemini' | 'self-hosted-agent';
+```
+
+The strategic set is the default target for the multi-agent orchestration roadmap. Experimental, compatibility, and legacy backends can still be called explicitly, but should not receive default orchestrator routes for high-value production tasks unless policy explicitly opts in.
 
 ## Backend Adapter Model
 
@@ -64,6 +88,10 @@ backend: 'hermes-agent'
 ```
 
 with the same task input and event handling code.
+
+Production `agent_backend` adapters are expected to use a structured, status-transparent transport. Official app-server protocols, SDKs, JSON-RPC, stdio RPC, HTTP/WebSocket event streams, local runtime APIs, or schema-backed bridges are acceptable. A plain CLI transcript is only a bootstrap/debug/fallback/compatibility path unless the adapter can also expose structured events, `readState`, approval requests, tool calls, workspace facts, abort/resume, and native session references.
+
+This is the public API consequence of the architecture: applications and other agents should see AgentServer as a transparent control plane, not as a text terminal wrapper around opaque tools. The detailed adapter-side contract is maintained in [Adapter Contract](./adapter-contract.md).
 
 `openteam_agent` is the self-developed/custom backend seed. It vendors its SDK runtime inside `server/backend/openteam_agent`, so AgentServer can run independently without importing an external SDK checkout. It still emits the same normalized AgentServer events and uses the same canonical tool primitive names.
 
@@ -213,17 +241,49 @@ Runnable SDK examples live in:
 All backends are normalized into the same run event shape:
 
 ```ts
+type RunStatus =
+  | 'queued'
+  | 'planning'
+  | 'running'
+  | 'waiting_user'
+  | 'cancelling'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'timeout';
+
+type StageStatus =
+  | 'pending'
+  | 'running'
+  | 'waiting_user'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'timeout'
+  | 'skipped';
+
+type BackendStageResult = {
+  status: StageStatus;
+  finalText?: string;
+  filesChanged?: string[];
+  diffSummary?: string;
+  testsRun?: Array<{ command: string; status: 'passed' | 'failed' | 'skipped' }>;
+  handoffSummary?: string;
+  risks?: string[];
+};
+
 type Event =
-  | { type: 'status'; status: 'starting' | 'running' | 'waiting_permission' | 'completed' | 'failed'; message?: string }
+  | { type: 'status'; status: 'starting' | 'running' | 'waiting_permission' | 'completed' | 'failed'; stageId?: string; message?: string }
   | { type: 'text-delta'; text: string }
-  | { type: 'tool-call'; toolName: string; detail?: string }
-  | { type: 'tool-result'; toolName: string; detail?: string; output?: string }
-  | { type: 'permission-request'; requestId: string; toolName: string; detail?: string }
+  | { type: 'tool-call'; stageId?: string; toolName: string; detail?: string }
+  | { type: 'tool-result'; stageId?: string; toolName: string; detail?: string; output?: string }
+  | { type: 'permission-request'; stageId?: string; requestId: string; toolName: string; detail?: string }
+  | { type: 'stage-result'; stageId: string; result: BackendStageResult }
   | { type: 'result'; output: { success: true; result: string } | { success: false; error: string } }
-  | { type: 'error'; error: string };
+  | { type: 'error'; stageId?: string; error: string };
 ```
 
-The event interface is uniform. Backend capabilities describe which advanced behaviors are available or meaningful for a specific backend.
+The event interface is uniform. Backend capabilities describe which advanced behaviors are available or meaningful for a specific backend. Public SDK/UI integrations may ignore `stageId` by default and still present a single continuous agent experience; audit/debug views should preserve `stageId`.
 
 Event meanings:
 
@@ -234,8 +294,19 @@ Event meanings:
 | `tool-call` | A real tool invocation started. `toolName` uses the canonical primitive name when routed through the shared tool bridge. |
 | `tool-result` | A real tool invocation finished. `output` contains the auditable result text when available. |
 | `permission-request` | Backend requested approval before continuing a sensitive action. |
+| `stage-result` | Internal stage finished and emitted structured handoff/audit facts. |
 | `result` | Final run output. |
 | `error` | Runtime or adapter error that could not be represented as a normal result. |
+
+Run/Stage ledger status semantics:
+
+- A `Run` represents one external request.
+- A `Stage` is an internal audited step inside a run.
+- A run can be `running` while multiple stages are `pending/running/completed`.
+- If a stage waits for approval or clarification, the run enters `waiting_user`.
+- Stage failure does not automatically mean run failure; orchestrator policy may retry or fallback, but audit must retain both the failed stage and fallback stage.
+
+The detailed adapter-side contract is maintained in [Adapter Contract](./adapter-contract.md).
 
 ## Canonical Tool Primitives
 

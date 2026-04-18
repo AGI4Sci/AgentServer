@@ -1,6 +1,6 @@
 # AgentServer Core Context Contract
 
-最后更新：2026-04-18
+最后更新：2026-04-19
 
 ## 定位
 
@@ -30,6 +30,7 @@ Agent
 Session
 ContextItem
 Run
+Stage
 Artifact
 ```
 
@@ -99,6 +100,31 @@ guidance     recovery/maintenance/clarification 等操作提示
 
 这些 layer 是逻辑层，不要求 backend 内部采用相同布局。
 
+### `work` / `currentWork` 生命周期
+
+`work` 是 session-scoped 的滑动工作窗口，不是无限增长的完整 transcript。
+
+推荐语义：
+
+```text
+memory
+  跨 session 长期记忆，生命周期长，写入需要 summary/constraint 抽取。
+
+state / persistent
+  当前 session 稳定状态，例如目标、计划、关键决策、用户偏好、未解决问题。
+
+work / currentWork
+  当前 session 的近期工作窗口，生命周期随 session 推进而滑动。
+```
+
+`work` 默认跟 AgentServer session 绑定，而不是跟单个 run 绑定。一个 session 内多次 run 可以共享近期工作上下文，但 Core 必须有淘汰策略：
+
+- 优先保留当前目标、计划、关键决策、未解决问题。
+- 优先保留最近 stage 的 structured result、diff summary、test summary、risks。
+- 原始 recent turns 只保留有限窗口。
+- 当窗口过大时，先把旧 work 压缩成 summary，再降级到 persistent/state 或 memory candidate。
+- 不把 backend native thread 当作 `work` 的唯一来源；native session 丢失后仍可通过 Core context 恢复。
+
 ## Context Policy
 
 上层项目可以用 `contextPolicy` 控制本次 run 注入哪些外部上下文。
@@ -155,6 +181,78 @@ contextRefs: [
 ```
 
 Core 的目标不是记录每个 token 的来源，而是提供足够稳定的审计边界。
+
+## Canonical Session Context
+
+多 backend 编排时，AgentServer 必须持有 canonical session context。它是跨 backend 连续性的主要来源。
+
+```ts
+type CanonicalSessionContext = {
+  goal: string;
+  plan: string[];
+  decisions: string[];
+  constraints: string[];
+  workspaceState: {
+    root: string;
+    branch?: string;
+    dirtyFiles: string[];
+    lastKnownDiffSummary?: string;
+  };
+  artifacts: Array<{ id: string; kind: string; path?: string; uri?: string }>;
+  backendRunRecords: Array<{
+    runId: string;
+    stageId: string;
+    backendId: string;
+    summary: string;
+    filesChanged: string[];
+    testsRun: string[];
+    risks: string[];
+  }>;
+  openQuestions: string[];
+};
+```
+
+Canonical context 不要求一次性全部注入 backend。每个 stage 应由 AgentServer 根据任务类型和 backend 能力渲染成 `BackendHandoffPacket`。
+
+## Backend Handoff
+
+Handoff 是跨 backend 接力的显式协议。它不等于完整聊天历史。
+
+Handoff 必须包含：
+
+- 当前目标和本 stage 的具体任务。
+- 关键约束和用户偏好。
+- prior stage 的结构化摘要。
+- workspace hard facts，例如 git diff、改动文件、测试输出、artifact refs。
+- 未解决问题和下一步建议。
+- backend capability 或降级提示。
+
+生成原则：
+
+- handoff 由 AgentServer 生成。
+- backend 自己提供的 summary 只是输入之一。
+- workspace hard facts 优先于自然语言总结。
+- 切换 backend 前，AgentServer 应重新读取或确认真实 workspace 状态。
+
+## Context 淘汰策略
+
+长 session 中，Core 应按价值保留上下文：
+
+1. 用户目标、当前 plan、关键决策。
+2. 未解决风险、open questions、approval 状态。
+3. 最近 stage result、diff/test facts、artifact refs。
+4. 最近 turns 的短窗口。
+5. 旧 turns 的 summary。
+6. 可从 workspace 或 artifact 重新读取的原始材料。
+
+可以淘汰或降级的内容：
+
+- 旧的逐字对话 transcript。
+- 已被 diff/test/artifact 覆盖的中间自然语言描述。
+- backend 私有 debug trace，除非 audit 或复现需要。
+- 可由 workspace search 重新获得的大段文件内容。
+
+淘汰不应破坏 audit。被压缩或淘汰的 context 应留下 summary、refs 或 artifact 指针。
 
 ## Retrieval Chain
 

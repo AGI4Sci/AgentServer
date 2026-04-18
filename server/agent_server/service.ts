@@ -4,9 +4,11 @@ import { promisify } from 'util';
 import { resolve, relative } from 'path';
 import {
   DEFAULT_BACKEND,
+  getBackendDescriptor,
   isBackendEnabled,
   normalizeBackendType,
 } from '../../core/runtime/backend-catalog.js';
+import type { BackendType } from '../../core/runtime/backend-catalog.js';
 import type { SessionOutput, SessionStreamEvent } from '../runtime/session-types.js';
 import { runSessionViaSupervisor } from '../runtime/supervisor-session-runner.js';
 import { listConfiguredLlmEndpoints, loadOpenTeamConfig } from '../utils/openteam-config.js';
@@ -41,6 +43,10 @@ import type {
   AgentRetrievalRequest,
   AgentRetrievalResult,
   AgentRunRecord,
+  AgentRunStageType,
+  AgentRunStageRecord,
+  BackendHandoffPacket,
+  BackendStageResult,
   AgentSessionRecord,
   AgentTurnRecord,
   AgentTurnLogQuery,
@@ -66,6 +72,7 @@ import type {
   AgentWorkEntry,
   AgentWorkLayout,
   AgentWorkLayoutSegment,
+  WorkspaceFacts,
   CompactPreviewResult,
   CompactPreviewCandidate,
   CompactDecisionSnapshot,
@@ -2570,6 +2577,7 @@ export class AgentServerService {
     }
 
     const runId = `run-${Date.now().toString(36)}-${randomUUID().slice(0, 6)}`;
+    const stageId = `${runId}-stage-implement-1`;
     agent.runtime.isRunning = true;
     agent.runtime.currentRunId = runId;
     agent.runtime.lastTickAt = nowIso();
@@ -2602,6 +2610,44 @@ export class AgentServerService {
       contextPolicy,
     );
     const contextRefs = this.buildRunContextRefs(contextSnapshot, contextPolicy);
+    const workspaceFacts = await this.collectWorkspaceFacts(agent.workingDirectory);
+    const handoffPacket: BackendHandoffPacket = {
+      runId,
+      stageId,
+      stageType: 'implement',
+      goal: message,
+      userRequest: message,
+      canonicalContext: {
+        goal: message,
+        plan: [],
+        decisions: [],
+        constraints: [
+          ...contextSnapshot.memoryConstraintEntries.map((item) => item.desc),
+          ...contextSnapshot.persistentConstraintEntries.map((item) => item.desc),
+        ].filter(Boolean),
+        workspaceState: {
+          ...workspaceFacts,
+        },
+        artifacts: [],
+        backendRunRecords: [],
+        openQuestions: contextSnapshot.pendingClarification
+          ? [contextSnapshot.pendingClarification.question]
+          : [],
+      },
+      stageInstructions: this.renderHandoffStageInstructions(agent.backend, 'implement'),
+      constraints: [
+        ...contextSnapshot.memoryConstraintEntries.map((item) => item.desc),
+        ...contextSnapshot.persistentConstraintEntries.map((item) => item.desc),
+      ].filter(Boolean),
+      workspaceFacts: {
+        ...workspaceFacts,
+      },
+      priorStageSummaries: [],
+      openQuestions: contextSnapshot.pendingClarification
+        ? [contextSnapshot.pendingClarification.question]
+        : [],
+      metadata: request.metadata,
+    };
     const userTurn = {
       kind: 'turn' as const,
       turnId: `turn-${randomUUID()}`,
@@ -2686,6 +2732,64 @@ export class AgentServerService {
       reasons: output.success ? ['backend returned a successful result'] : [assistantContent || 'backend returned an error'],
       evaluator: 'agent-server-basic',
     };
+    const backendDescriptor = getBackendDescriptor(agent.backend);
+    const stageResult: BackendStageResult = {
+      status: output.success ? 'completed' : 'failed',
+      finalText: assistantContent,
+      filesChanged: [],
+      toolCalls: events
+        .filter((event) => event.type === 'tool-call')
+        .map((event) => ({
+          toolName: event.toolName,
+          detail: event.detail,
+          status: 'unknown' as const,
+        })),
+      testsRun: [],
+      findings: [],
+      handoffSummary: output.success
+        ? excerpt(assistantContent, 500)
+        : `Backend failed: ${excerpt(assistantContent, 500)}`,
+      nextActions: [],
+      risks: output.success ? [] : [assistantContent || 'backend returned an error'],
+      artifacts: [],
+      nativeSessionRef: {
+        id: `agent-server:${agent.id}:${session.id}`,
+        backend: agent.backend,
+        scope: 'session',
+        resumable: backendDescriptor.capabilities.persistentSession,
+      },
+    };
+    const stageRecord: AgentRunStageRecord = {
+      id: stageId,
+      runId,
+      type: 'implement',
+      backend: agent.backend,
+      status: stageResult.status,
+      dependsOn: [],
+      ownership: {
+        workspaceId: agent.workingDirectory,
+        writeMode: 'serial',
+      },
+      input: handoffPacket,
+      result: stageResult,
+      metrics: {
+        durationMs: Math.max(0, Date.now() - runStartedAtMs),
+        toolCallCount: stageResult.toolCalls.length,
+        approxInputTokens: approxTokens(executionContext),
+        usage: output.usage,
+      },
+      audit: {
+        backend: agent.backend,
+        backendKind: backendDescriptor.kind,
+        backendTier: backendDescriptor.tier,
+        inputSummary: excerpt(message, 500),
+        outputSummary: excerpt(assistantContent, 500),
+        failureReason: output.success ? undefined : assistantContent,
+        nativeSessionRef: stageResult.nativeSessionRef,
+      },
+      createdAt: userTurn.createdAt,
+      completedAt: assistantTurn.createdAt,
+    };
     let evaluation = basicEvaluation;
     if (this.options.evaluateRun) {
       try {
@@ -2701,6 +2805,7 @@ export class AgentServerService {
             },
             output,
             events,
+            stages: [stageRecord],
             contextRefs,
             metrics: {
               durationMs: Math.max(0, Date.now() - runStartedAtMs),
@@ -2742,6 +2847,7 @@ export class AgentServerService {
       },
       output,
       events,
+      stages: [stageRecord],
       contextRefs,
       metrics: {
         durationMs: Math.max(0, Date.now() - runStartedAtMs),
@@ -2935,6 +3041,70 @@ export class AgentServerService {
       '- If the retrieval chain does not produce enough evidence, ask the human for clarification instead of filling the gap with guesses.',
       '- Keep decisions auditable; prefer reading facts over guessing.',
     ].join('\n');
+  }
+
+  private renderHandoffStageInstructions(backend: BackendType, stageType: AgentRunStageType): string {
+    const shared = [
+      `Stage type: ${stageType}`,
+      'Use the handoff packet as the task boundary.',
+      'Prefer workspace facts, git diff, test output, and tool results over natural-language summaries.',
+      'Return enough detail for AgentServer to build a structured stage result and next handoff.',
+    ];
+    if (backend === 'codex') {
+      shared.push('Focus on correctness, bug finding, risk review, and verification signals.');
+    } else if (backend === 'claude-code') {
+      shared.push('Focus on implementation, refactoring, and coherent file edits.');
+    } else if (backend === 'openteam_agent') {
+      shared.push('Focus on transparent tool/context behavior for self-hosted harness experimentation.');
+    }
+    return shared.join('\n');
+  }
+
+  private async collectWorkspaceFacts(root: string): Promise<WorkspaceFacts> {
+    const facts: WorkspaceFacts = {
+      root,
+      dirtyFiles: [],
+    };
+    try {
+      const branchRun = await execFileAsync('git', ['branch', '--show-current'], {
+        cwd: root,
+        timeout: 2_000,
+      });
+      const branch = String(branchRun.stdout || '').trim();
+      if (branch) {
+        facts.branch = branch;
+      }
+    } catch {
+      // Non-git workspaces are valid; leave branch unset.
+    }
+    try {
+      const statusRun = await execFileAsync('git', ['status', '--porcelain'], {
+        cwd: root,
+        timeout: 2_000,
+      });
+      facts.dirtyFiles = String(statusRun.stdout || '')
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => line.slice(3).trim())
+        .filter(Boolean)
+        .slice(0, 200);
+    } catch {
+      // Keep workspace facts best-effort; lack of git should not block a run.
+    }
+    try {
+      const diffRun = await execFileAsync('git', ['diff', '--stat'], {
+        cwd: root,
+        timeout: 2_000,
+      });
+      const diffSummary = String(diffRun.stdout || '').trim();
+      if (diffSummary) {
+        facts.lastKnownDiffSummary = diffSummary.slice(0, 4_000);
+      }
+    } catch {
+      // Best-effort only.
+    }
+    return facts;
   }
 
   private buildRunContextRefs(

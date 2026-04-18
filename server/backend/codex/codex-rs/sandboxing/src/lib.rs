@@ -22,7 +22,9 @@ pub use manager::get_platform_sandbox;
 use codex_protocol::error::CodexErr;
 
 #[cfg(not(target_os = "linux"))]
-pub fn system_bwrap_warning() -> Option<String> {
+pub fn system_bwrap_warning(
+    _sandbox_policy: &codex_protocol::protocol::SandboxPolicy,
+) -> Option<String> {
     None
 }
 
@@ -31,6 +33,10 @@ impl From<SandboxTransformError> for CodexErr {
         match err {
             SandboxTransformError::MissingLinuxSandboxExecutable => {
                 CodexErr::LandlockSandboxExecutableNotProvided
+            }
+            #[cfg(target_os = "linux")]
+            SandboxTransformError::Wsl1UnsupportedForBubblewrap => {
+                CodexErr::UnsupportedOperation(crate::bwrap::WSL1_BWRAP_WARNING.to_string())
             }
             #[cfg(not(target_os = "macos"))]
             SandboxTransformError::SeatbeltUnavailable => CodexErr::UnsupportedOperation(

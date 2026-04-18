@@ -98,19 +98,184 @@ export interface AgentRunRecord {
   id: string;
   agentId: string;
   sessionId: string;
-  status: 'completed' | 'failed';
+  status: AgentRunStatus;
   request: {
     message: string;
     context: string;
   };
   output: SessionOutput;
   events: SessionStreamEvent[];
+  stages?: AgentRunStageRecord[];
   contextRefs?: AgentContextRef[];
   metrics?: AgentRunMetrics;
   evaluation?: AgentRunEvaluation;
   metadata?: Record<string, unknown>;
   createdAt: string;
   completedAt: string;
+}
+
+export type AgentRunStatus =
+  | 'queued'
+  | 'planning'
+  | 'running'
+  | 'waiting_user'
+  | 'cancelling'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'timeout';
+
+export type AgentRunStageType =
+  | 'plan'
+  | 'diagnose'
+  | 'implement'
+  | 'review'
+  | 'verify'
+  | 'summarize';
+
+export type AgentRunStageStatus =
+  | 'pending'
+  | 'running'
+  | 'waiting_user'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'timeout'
+  | 'skipped';
+
+export interface AgentRunStageOwnership {
+  workspaceId: string;
+  paths?: string[];
+  worktree?: string;
+  writeMode: 'none' | 'serial' | 'owned_paths' | 'isolated_worktree';
+}
+
+export interface AgentRunStageRecord {
+  id: string;
+  runId: string;
+  type: AgentRunStageType;
+  backend: BackendType;
+  status: AgentRunStageStatus;
+  dependsOn: string[];
+  ownership?: AgentRunStageOwnership;
+  input: BackendHandoffPacket;
+  result?: BackendStageResult;
+  metrics?: AgentRunStageMetrics;
+  audit: AgentRunStageAudit;
+  createdAt: string;
+  completedAt?: string;
+}
+
+export interface AgentRunStageMetrics {
+  durationMs: number;
+  toolCallCount: number;
+  approxInputTokens?: number;
+  usage?: SessionOutput['usage'];
+}
+
+export interface AgentRunStageAudit {
+  backend: BackendType;
+  backendKind?: 'model_provider' | 'agent_backend';
+  backendTier?: 'strategic' | 'experimental' | 'compatibility' | 'legacy';
+  inputSummary: string;
+  outputSummary?: string;
+  fallbackFromStageId?: string;
+  failureReason?: string;
+  nativeSessionRef?: BackendSessionRef;
+}
+
+export interface BackendSessionRef {
+  id: string;
+  backend: BackendType;
+  scope: 'session' | 'stage';
+  resumable: boolean;
+  metadata?: Record<string, unknown>;
+}
+
+export interface BackendHandoffPacket {
+  runId: string;
+  stageId: string;
+  stageType: AgentRunStageType;
+  goal: string;
+  userRequest: string;
+  canonicalContext: CanonicalSessionContextSnapshot;
+  stageInstructions: string;
+  constraints: string[];
+  workspaceFacts: WorkspaceFacts;
+  priorStageSummaries: StageSummary[];
+  openQuestions: string[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface CanonicalSessionContextSnapshot {
+  goal: string;
+  plan: string[];
+  decisions: string[];
+  constraints: string[];
+  workspaceState: WorkspaceFacts;
+  artifacts: ArtifactRef[];
+  backendRunRecords: StageSummary[];
+  openQuestions: string[];
+}
+
+export interface WorkspaceFacts {
+  root: string;
+  branch?: string;
+  dirtyFiles: string[];
+  lastKnownDiffSummary?: string;
+}
+
+export interface StageSummary {
+  runId: string;
+  stageId: string;
+  backend: BackendType;
+  summary: string;
+  filesChanged: string[];
+  testsRun: string[];
+  risks: string[];
+}
+
+export interface BackendStageResult {
+  status: AgentRunStageStatus;
+  finalText?: string;
+  filesChanged: string[];
+  diffSummary?: string;
+  toolCalls: ToolCallSummary[];
+  testsRun: TestRunSummary[];
+  findings: Finding[];
+  handoffSummary: string;
+  nextActions: string[];
+  risks: string[];
+  artifacts: ArtifactRef[];
+  nativeSessionRef?: BackendSessionRef;
+}
+
+export interface ToolCallSummary {
+  toolName: string;
+  detail?: string;
+  status?: 'succeeded' | 'failed' | 'unknown';
+}
+
+export interface TestRunSummary {
+  command: string;
+  status: 'passed' | 'failed' | 'skipped' | 'unknown';
+  summary?: string;
+}
+
+export interface Finding {
+  title: string;
+  detail: string;
+  severity?: 'info' | 'warning' | 'error';
+  file?: string;
+  line?: number;
+}
+
+export interface ArtifactRef {
+  id: string;
+  kind: string;
+  path?: string;
+  uri?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface AgentContextRef {

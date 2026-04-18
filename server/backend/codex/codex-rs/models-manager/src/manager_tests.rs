@@ -3,7 +3,7 @@ use crate::ModelsManagerConfig;
 use base64::Engine as _;
 use chrono::Utc;
 use codex_api::TransportError;
-use codex_login::AuthCredentialsStoreMode;
+use codex_config::types::AuthCredentialsStoreMode;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_model_provider_info::WireApi;
@@ -70,6 +70,7 @@ fn remote_model_with_visibility(
             "supports_parallel_tool_calls": false,
             "supports_image_detail_original": false,
             "context_window": 272_000,
+            "max_context_window": 272_000,
             "experimental_supported_tools": [],
         }))
         .expect("valid model")

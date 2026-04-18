@@ -1,4 +1,5 @@
 import type { BackendType } from '../../core/runtime/backend-catalog.js';
+import type { BackendStageResult } from '../agent_server/types.js';
 import type { RuntimeEventProtocolVersion } from './runtime-event-contract.js';
 
 export interface SessionInput {
@@ -73,32 +74,43 @@ export interface RunSessionOptions {
 export type SessionStreamEvent =
   | ({
       type: 'text-delta';
+      stageId?: string;
       text: string;
     } & RuntimeEventBase)
   | ({
       type: 'status';
+      stageId?: string;
       status: 'starting' | 'running' | 'waiting_permission' | 'completed' | 'failed';
       message?: string;
     } & RuntimeEventBase)
   | ({
       type: 'tool-call';
+      stageId?: string;
       toolName: string;
       detail?: string;
     } & RuntimeEventBase & ToolRouteEventFields)
   | ({
       type: 'tool-result';
+      stageId?: string;
       toolName: string;
       detail?: string;
       output?: string;
     } & RuntimeEventBase & ToolRouteEventFields)
   | ({
       type: 'permission-request';
+      stageId?: string;
       requestId: string;
       toolName: string;
       detail?: string;
     } & RuntimeEventBase)
   | ({
+      type: 'stage-result';
+      stageId: string;
+      result: BackendStageResult;
+    } & RuntimeEventBase)
+  | ({
       type: 'error';
+      stageId?: string;
       error: string;
     } & RuntimeEventBase)
   | ({

@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use codex_app_server_protocol::AppInfo;
-use codex_mcp::mcp::CODEX_APPS_MCP_SERVER_NAME;
+use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_rmcp_client::ElicitationAction;
 use codex_tools::DiscoverableTool;
 use codex_tools::DiscoverableToolAction;
@@ -155,8 +155,8 @@ impl ToolHandler for ToolSuggestHandler {
 }
 
 async fn verify_tool_suggestion_completed(
-    session: &crate::codex::Session,
-    turn: &crate::codex::TurnContext,
+    session: &crate::session::session::Session,
+    turn: &crate::session::turn_context::TurnContext,
     tool: &DiscoverableTool,
     auth: Option<&codex_login::CodexAuth>,
 ) -> bool {
@@ -194,8 +194,8 @@ async fn verify_tool_suggestion_completed(
 }
 
 async fn refresh_missing_suggested_connectors(
-    session: &crate::codex::Session,
-    turn: &crate::codex::TurnContext,
+    session: &crate::session::session::Session,
+    turn: &crate::session::turn_context::TurnContext,
     auth: Option<&codex_login::CodexAuth>,
     expected_connector_ids: &[String],
     tool_id: &str,

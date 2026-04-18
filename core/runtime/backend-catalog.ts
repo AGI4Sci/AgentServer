@@ -10,6 +10,19 @@ export const BACKEND_IDS = [
 
 export type BackendType = (typeof BACKEND_IDS)[number];
 
+export type BackendTier = 'strategic' | 'experimental' | 'compatibility' | 'legacy';
+
+export type ExecutionBackendKind = 'model_provider' | 'agent_backend';
+
+export const STRATEGIC_AGENT_BACKENDS = [
+  'codex',
+  'claude-code',
+  'gemini',
+  'self-hosted-agent',
+] as const;
+
+export type StrategicAgentBackend = (typeof STRATEGIC_AGENT_BACKENDS)[number];
+
 export interface BackendCapabilities {
   persistentSession: boolean;
   permissionRequest: boolean;
@@ -23,6 +36,8 @@ export interface BackendDescriptor {
   id: BackendType;
   label: string;
   family: 'openteam' | 'claude-code' | 'codex' | 'hermes' | 'openclaw' | 'zeroclaw';
+  tier: BackendTier;
+  kind: ExecutionBackendKind;
   executables: readonly string[];
   capabilities: BackendCapabilities;
 }
@@ -32,6 +47,8 @@ export const BACKEND_CATALOG: readonly BackendDescriptor[] = [
     id: 'openteam_agent',
     label: 'OpenTeam Agent',
     family: 'openteam',
+    tier: 'strategic',
+    kind: 'agent_backend',
     executables: [],
     capabilities: {
       persistentSession: false,
@@ -46,6 +63,8 @@ export const BACKEND_CATALOG: readonly BackendDescriptor[] = [
     id: 'claude-code',
     label: 'Claude Code',
     family: 'claude-code',
+    tier: 'strategic',
+    kind: 'agent_backend',
     executables: ['openteam_claude_code', 'openteam_claude_code.cmd'],
     capabilities: {
       persistentSession: true,
@@ -60,6 +79,8 @@ export const BACKEND_CATALOG: readonly BackendDescriptor[] = [
     id: 'claude-code-rust',
     label: 'Claude Code Rust',
     family: 'claude-code',
+    tier: 'compatibility',
+    kind: 'agent_backend',
     executables: ['openteam_claude_code_rust'],
     capabilities: {
       persistentSession: true,
@@ -74,6 +95,8 @@ export const BACKEND_CATALOG: readonly BackendDescriptor[] = [
     id: 'codex',
     label: 'Codex',
     family: 'codex',
+    tier: 'strategic',
+    kind: 'agent_backend',
     executables: ['openteam_codex'],
     capabilities: {
       persistentSession: true,
@@ -88,6 +111,8 @@ export const BACKEND_CATALOG: readonly BackendDescriptor[] = [
     id: 'hermes-agent',
     label: 'Hermes Agent',
     family: 'hermes',
+    tier: 'experimental',
+    kind: 'agent_backend',
     executables: ['openteam_hermes_agent', 'openteam_hermes_agent.cmd'],
     capabilities: {
       persistentSession: true,
@@ -102,6 +127,8 @@ export const BACKEND_CATALOG: readonly BackendDescriptor[] = [
     id: 'openclaw',
     label: 'OpenClaw',
     family: 'openclaw',
+    tier: 'compatibility',
+    kind: 'agent_backend',
     executables: ['openteam_openclaw', 'openteam_openclaw.cmd'],
     capabilities: {
       persistentSession: true,
@@ -116,6 +143,8 @@ export const BACKEND_CATALOG: readonly BackendDescriptor[] = [
     id: 'zeroclaw',
     label: 'ZeroClaw',
     family: 'zeroclaw',
+    tier: 'legacy',
+    kind: 'agent_backend',
     executables: ['openteam_zeroclaw'],
     capabilities: {
       persistentSession: true,
@@ -153,6 +182,16 @@ export function isBackendEnabled(backend: BackendType): boolean {
 export function listBackendDescriptors(): BackendDescriptor[] {
   const enabled = new Set(listEnabledBackendIds());
   return BACKEND_CATALOG.filter((backend) => enabled.has(backend.id)).map((backend) => ({ ...backend }));
+}
+
+export function listStrategicAgentBackends(): readonly StrategicAgentBackend[] {
+  return STRATEGIC_AGENT_BACKENDS;
+}
+
+export function listRegisteredStrategicBackendIds(): BackendType[] {
+  return listBackendDescriptors()
+    .filter((backend) => backend.tier === 'strategic')
+    .map((backend) => backend.id);
 }
 
 export function normalizeBackendType(value: unknown, fallback: BackendType = DEFAULT_BACKEND): BackendType {

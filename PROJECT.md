@@ -5,68 +5,19 @@
 ## 使用约定
 - 本文档作为 AgentServer 工程任务板使用，只保留正在推进或待推进的任务。
 - 已完成任务的长正文不留在本文档中；需要历史细节时查看 git history。
-- 每个任务只保留 `目标说明 / 成功标准 / TODO / 异常发现 / Takeaway`。
-- 设计原则、架构说明、接口语义写在 `docs/architecture.md`；任务拆解和执行状态写在本文档。
+- 设计原则、架构说明、接口语义写在 `docs/architecture.md` / `docs/adapter-contract.md`；任务拆解和执行状态写在本文档。
 - 文档入口、导航和主题归档统一放在 `docs/` 目录。
 - AgentServer Core 保持通用、稳定、简洁；复杂自进化决策不进入核心。
-- Evolution Engine 作为可选插件/服务，读取 AgentServer 数据，生成 proposal，并通过受控 API 应用已验证变更。
-- Backend Harness 保持自治；v9 可以做自己的 harness-level evolution，但不作为所有 backend 的公共策略。
 - 开发过程中发现新的 TODO，优先追加到本文档。
 
 ## 当前状态
-- `T035`：Agent Backend Orchestration 最终架构（推进中）：AgentServer 从多 backend facade 升级为多 agent backend 编排层；首版 strategic backend 只支持 Codex、Claude Code、Gemini 和自研 agent。
-- `T036`：首版完整 agent-backend adapter（待推进）：将 Codex、Claude Code、Gemini 和自研 agent 作为首版完整 agent backend 接入，而不是把所有历史 backend 平权推进。
-- `T037`：统一上下文与 backend handoff 契约（待推进）：由 AgentServer 持有 canonical session context，各 backend 只接收面向任务阶段的 handoff packet。
+- `T036`：首版完整 agent-backend adapter（推进中）：首版 strategic backend 只支持 Codex、Claude Code、Gemini 和自研 agent；契约已文档化，后续进入 adapter 原型实现。
+- `T037`：统一上下文与 backend handoff 契约（推进中）：canonical context / handoff / stage result 已文档化，后续进入 run ledger、renderer 和 stage boundary verification 实现。
 - `T038`：Live Backend Benchmark 独立模块（待讨论，暂不实现）：记录需要独立设计 backend 评估与路由打分模块，后续单独深入讨论。
-- `T039`：Run/Stage 状态机与 Adapter Contract 文档（待推进）：补齐 Stage 一等模型、状态机、adapter contract、metadata 治理和 evolution risk checker。
-- `T040`：Native Session Scope 与 Orchestrator Policy 边界（已记录，待落文档/接口）：明确 backend native session 默认 session-scoped 复用但不是真相源，orchestrator 拆为 core kernel 与可插拔 policy。
 
 ## 已完成任务归档摘要
-- `T001`-`T034` 已完成或已被后续任务取代；详细任务正文从本文档移除以节约上下文。
-- 关键完成里程碑：通用 runs facade、metadata/audit、context/evaluation 基础字段、proposal store、backend smoke、Hermes/openteam_agent 集成、SDK 化、deployment/workers/tool routing、SSH worker smoke、worker env/proxy 注入。
-
----
-
-### T035
-
-#### 目标说明
-- 定义 AgentServer 的最终形态：不是多 model provider 网关，而是多 agent backend 的统一编排层。
-- 对外仍暴露一个连续 agent/session/run；内部可以按任务阶段调用不同 backend，例如 Codex 负责审查和找 bug，Claude Code 负责实现，Gemini 负责长上下文/多模态/宽范围分析，自研 agent 负责白盒 harness 与策略实验。
-- 不考虑旧接口兼容性时，优先让最终状态契合长期需求：AgentServer 拥有上下文、权限、审计、路由、验证和用户体验；backend 只作为可组合的执行专家。
-- 首版 strategic backend set 收敛为 `codex / claude-code / gemini / self-hosted-agent`；其它 backend 保留为 experimental / compatibility / legacy，不进入首版默认 orchestrator 路由。
-
-#### 成功标准
-- 文档明确区分 `model-provider runtime` 和 `agent-backend runtime`。
-- 文档明确 AgentServer 是 orchestrator，不把 orchestration 交给某一个 backend。
-- 文档明确每个 backend adapter 都必须输出 normalized result，而不是把 backend 私有事件直接泄漏给上层。
-- 文档明确一次用户 request 可以被拆成多个 backend stage，但对外保持一个 run。
-- 文档明确 backend 切换默认隐藏在主体验中，只在 debug trace / audit 中可见。
-- 文档明确完整 `agent_backend` 在单个 stage 内必须尽量保留 native loop、tools、approval、sandbox、streaming events 和 resumable session。
-- 文档明确部分能力或降级路径必须通过 capability 显式声明，不能伪装成完整 agent backend。
-- 文档明确首版 strategic backend set 只包含 Codex、Claude Code、Gemini 和自研 agent。
-
-#### TODO
-- [x] 在 `docs/architecture.md` 增加 Agent Backend Orchestration 章节。
-- [ ] 定义 `ExecutionBackend`：`model_provider` 与 `agent_backend` 两类。
-- [ ] 定义 `AgentRunStage`：`plan / diagnose / implement / review / verify / summarize` 等阶段。
-- [ ] 定义 stage dependency graph：读/审查可并行，写操作需串行或声明 ownership。
-- [ ] 明确 orchestrator 首版使用 rule-based policy，LLM planning 后续作为可校验增强。
-- [ ] 定义 orchestrator core kernel 与 orchestrator policy 的接口边界。
-- [ ] 定义 orchestrator policy 变更的 proposal / risk checker 流程。
-- [ ] 定义 backend strength policy：描述每个 backend 擅长和应避免的任务类型。
-- [ ] 定义 backend tier：`strategic / experimental / compatibility / legacy`。
-- [ ] 定义首版 strategic backend set：Codex、Claude Code、Gemini、自研 agent。
-- [ ] 定义 orchestrator 决策输入：任务类型、workspace 状态、成本预算、latency、risk、历史 benchmark score、用户偏好。
-- [ ] 定义对外事件语义：一个 run 可以包含多个 internal stages，但 SDK/HTTP 仍输出统一事件流。
-- [ ] 定义 audit trace：记录每个 stage 用了哪个 backend、输入摘要、输出摘要、成本、耗时、验证结果。
-- [x] 写入完整 agent backend 能力保留原则和显式降级语义。
-
-#### 异常发现
-- 当前 `openai-codex` 更接近 model provider：能复用 Codex 后端模型和 OAuth，但不能自动复用 Codex 官方 agent loop、工具注册、上下文管理和沙箱。
-- 如果直接把某个官方 SDK 当作主运行时，AgentServer 会失去统一 orchestration、worker routing、审计、verification 和多 backend 组合能力。
-
-#### Takeaway
-- AgentServer 的长期价值是成为“统一 agent 指挥中心”：backend 贡献专业能力，但 session/context/policy/verification 归 AgentServer。
+- `T001`-`T035`、`T039`、`T040` 已完成或已被后续任务取代；详细任务正文从本文档移除以节约上下文。
+- 关键完成里程碑：通用 runs facade、metadata/audit、context/evaluation 基础字段、proposal store、backend smoke、Hermes/openteam_agent 集成、SDK 化、deployment/workers/tool routing、SSH worker smoke、worker env/proxy 注入、Gemini 源码纳入、agent-backend orchestration 架构、adapter contract、native session/policy 边界、Run/Stage 状态和 context lifecycle 文档。
 
 ---
 
@@ -75,6 +26,8 @@
 #### 目标说明
 - 将 Codex app-server / SDK、Claude Code、Gemini 和自研 agent 接为首版完整 `agent_backend`，而不是继续只通过普通 provider 抽象调用模型。
 - 让代码任务可以在一次 request 内复用 backend 的完整能力：agent loop、官方工具事件、thread/session、approval、sandbox 或等价执行策略。
+- 正式路线采用结构化、状态透明的 SDK/API/RPC/app-server/bridge；CLI 只作为 bootstrap、debug、fallback 或 compatibility path。
+- 官方 backend 源码默认保持可替换；adapter 修改优先放在 AgentServer runtime 层，确需 patch 官方源码时必须登记重放线索。
 - 保留 `openai-codex` direct provider 和其它历史 backend 的定位为轻量/兼容/实验/兜底路径；强任务优先走首版 strategic backend。
 
 #### 成功标准
@@ -86,26 +39,36 @@
 - adapter 能把 backend 原生事件映射为 AgentServer normalized events。
 - adapter 能把 backend 的文件变更、工具调用、审批请求、错误、最终回答转成 normalized result。
 - 同一个 AgentServer session 可以绑定不同 backend 的 native session/thread id。
-- adapter capability 明确标注 `nativeLoop/nativeTools/nativeSandbox/nativeApproval/nativeSession/fileEditing/streamingEvents/resumableSession` 等能力。
+- adapter capability 明确标注 `nativeLoop/nativeTools/nativeSandbox/nativeApproval/nativeSession/fileEditing/streamingEvents/structuredEvents/readableState/abortableRun/resumableSession/statusTransparency` 等能力。
+- 完整生产 `agent_backend` 必须提供机器可读状态和结构化事件；CLI-only adapter 不能被标记为完整生产 backend，除非有可靠 bridge 暴露同等能力。
+- Codex、Claude Code、Gemini 等官方 backend 更新后，AgentServer adapter 不需要重复修改官方源码；若存在必要 upstream patch，能从文档快速重放。
 
 #### TODO
-- [ ] 设计 `AgentBackendAdapter` 接口：`startSession / runTurn / abort / readState / dispose`。
-- [ ] 新增 `docs/adapter-contract.md`，说明 model-provider adapter 与 agent-backend adapter 的最小接口。
-- [ ] 在 `docs/adapter-contract.md` 定义 agent-backend capability declaration 与降级语义。
-- [ ] 设计 native session binding 存储：`agentServerSessionId -> backendId -> nativeSessionRef`。
-- [ ] 明确 adapter 默认复用 session-scoped native session，但必须支持 stage-scoped 隔离和 native session 重建。
+- [x] 设计 `AgentBackendAdapter` 接口：`startSession / runTurn / abort / readState / dispose`。
+- [x] 新增 TypeScript `AgentBackendAdapter` contract，供后续 Codex/Claude/Gemini/self-hosted adapter 实现。
+- [x] 新增 `docs/adapter-contract.md`，说明 model-provider adapter 与 agent-backend adapter 的最小接口。
+- [x] 在 `docs/adapter-contract.md` 定义 agent-backend capability declaration 与降级语义。
+- [x] 设计 native session binding 存储：`agentServerSessionId -> backendId -> nativeSessionRef`。
+- [x] 明确 adapter 默认复用 session-scoped native session，但必须支持 stage-scoped 隔离和 native session 重建。
+- [x] 定义 approval bridge：backend 请求审批时转成 AgentServer 审批事件。
+- [x] 定义 sandbox ownership：agent backend 模式下由 backend 自管，或把 backend 进程运行在 AgentServer worker/sandbox 内。
+- [x] 增加 failure-mode 文档：backend 启动失败、native session 丢失、审批超时、工具失败、workspace 权限不足。
+- [x] 在 backend catalog / SDK 中暴露 backend tier、execution kind 和 strategic backend roadmap。
+- [x] 在 run record / stream event 类型中补齐 stage、handoff、stage result 的基础结构。
+- [x] 明确正式 agent backend 必须使用结构化、状态透明 transport，CLI-only 只能作为 bootstrap/debug/fallback/compatibility。
+- [x] 在 adapter capability 中加入 `structuredEvents/readableState/abortableRun/statusTransparency`。
+- [x] 明确 upstream source isolation 原则：官方 backend 源码只读优先，adapter 逻辑默认写在 AgentServer 侧。
+- [x] 新增 upstream override 登记文档，记录必要官方源码 patch 和官方更新后的重放步骤。
 - [ ] 实现 Codex app-server adapter 原型，优先使用 app-server JSON-RPC，而不是只 spawn CLI 文本流。
-- [ ] 实现 Claude Code agent-backend adapter 原型，暴露同样的 normalized event/result。
-- [ ] 实现 Gemini agent-backend adapter 原型，优先覆盖长上下文、多模态和资料整合场景。
-- [ ] 实现自研 agent adapter 原型，用于白盒 context/tool/orchestration 策略实验。
-- [ ] 定义 approval bridge：backend 请求审批时转成 AgentServer 审批事件。
-- [ ] 定义 sandbox ownership：agent backend 模式下由 backend 自管，或把 backend 进程运行在 AgentServer worker/sandbox 内。
-- [ ] 增加 smoke：同一简单代码修改任务分别通过 Codex agent backend 和 Claude Code agent backend 完成，并输出标准事件。
-- [ ] 增加 failure-mode 文档：backend 启动失败、native session 丢失、审批超时、工具失败、workspace 权限不足。
+- [ ] 实现 Claude Code agent-backend adapter 原型，优先寻找结构化 protocol/bridge，暴露同样的 normalized event/result。
+- [ ] 实现 Gemini agent-backend adapter 原型，优先使用 SDK/API/app-server 或 schema bridge，覆盖长上下文、多模态和资料整合场景。
+- [ ] 实现自研 agent adapter 原型，用于白盒 context/tool/orchestration 策略实验，并作为状态透明 contract 的参考实现。
+- [ ] 增加 smoke：同一简单代码修改任务分别通过 Codex、Claude Code、Gemini、自研 agent 完成，并输出标准事件。
 
 #### 异常发现
 - Codex SDK 的高层能力适合做完整 agent backend，但不适合作为现有 model provider 的简单替换。
 - 完整 agent backend 的 fallback 语义不同于普通 model provider：执行中途静默切换 backend 可能破坏工具状态和 workspace 状态。
+- Gemini 源码已纳入 `server/backend/gemini`，但还没有接入 AgentServer backend catalog / launcher / adapter。
 
 #### Takeaway
 - SDK/app-server 是 backend adapter 的实现细节；AgentServer 不能把自己的 orchestration 责任交给任何单一 backend。
@@ -127,15 +90,18 @@
 - backend 私有 thread/session 只作为加速和连续性手段，不是唯一上下文来源。
 
 #### TODO
-- [ ] 定义 `CanonicalSessionContext`：goal、plan、decisions、workspace state、artifacts、backend run records、open questions。
-- [ ] 定义 `BackendHandoffPacket`：给下一 backend 的压缩上下文输入。
-- [ ] 定义 `BackendStageResult`：filesChanged、diffSummary、toolCalls、testsRun、findings、handoffSummary、nextActions。
-- [ ] 明确 handoff 由 AgentServer 生成，backend summary 只作为输入之一。
-- [ ] 将 workspace hard facts：git diff、测试输出、artifact refs 纳入 adapter/stage result contract。
-- [ ] 在 run ledger 中记录每个 stage 的 structured handoff。
-- [ ] 实现 handoff prompt renderer：Codex、Claude Code、普通 model provider 各有适配模板。
-- [ ] 增加 stage boundary verification：切换 backend 前读取真实 workspace diff 和测试状态，而不是只相信上一 backend 的自然语言总结。
-- [ ] 增加上下文压缩策略：长 session 优先保留目标、决策、diff/test 事实和未解决风险。
+- [x] 定义 `CanonicalSessionContext`：goal、plan、decisions、workspace state、artifacts、backend run records、open questions。
+- [x] 定义 `BackendHandoffPacket`：给下一 backend 的压缩上下文输入。
+- [x] 定义 `BackendStageResult`：filesChanged、diffSummary、toolCalls、testsRun、findings、handoffSummary、nextActions。
+- [x] 明确 handoff 由 AgentServer 生成，backend summary 只作为输入之一。
+- [x] 将 workspace hard facts：git diff、测试输出、artifact refs 纳入 adapter/stage result contract。
+- [x] 增加上下文压缩策略：长 session 优先保留目标、决策、diff/test 事实和未解决风险。
+- [x] 在当前单 backend 执行路径的 run ledger 中记录默认 stage、structured handoff 和 stage result。
+- [x] 实现基础 handoff prompt renderer：当前覆盖 Codex、Claude Code、自研 agent 和通用 backend 指令。
+- [x] 在当前单 stage 边界采集基础 workspace facts：branch、dirty files、git diff stat。
+- [ ] 扩展 handoff prompt renderer：补 Gemini 专用模板和普通 model provider 降级模板。
+- [ ] 增加完整 stage boundary verification：切换 backend 前读取真实 workspace diff、测试状态和 artifact refs，而不是只相信上一 backend 的自然语言总结。
+- [ ] 将单 stage run ledger 扩展为真正的 multi-stage orchestrator ledger。
 
 #### 异常发现
 - backend 之间不能共享隐式记忆；Codex thread 内知道的内容，Claude Code 不一定知道。
@@ -176,70 +142,3 @@
 
 #### Takeaway
 - benchmark 应作为独立模块记录和推进；当前架构先为它预留数据与路由接口，具体算法和实现后续再深入讨论。
-
----
-
-### T039
-
-#### 目标说明
-- 吸收架构评审中指出的落地摩擦点，补齐 Run/Stage、adapter、metadata、错误处理和 evolution risk 的明确契约。
-- 这些内容是从设计走向实现时的基础约束，应先文档化，再进入代码实现。
-
-#### 成功标准
-- `Stage` 明确作为 `Run` 的一等子对象进入核心模型。
-- 架构文档包含 Run/Stage 状态机。
-- 架构文档说明 `work` context 的 session-scoped 滑动窗口生命周期。
-- 架构文档说明 metadata namespace / schema registry 方向。
-- 架构文档说明 Evolution proposal risk 需要 AgentServer policy checker 兜底。
-- 后续存在单独 adapter contract 文档任务。
-
-#### TODO
-- [x] 更新 `docs/architecture.md`，把 Stage 纳入核心模型。
-- [x] 更新 `docs/architecture.md`，补 Run/Stage 状态机与 stage 失败策略。
-- [x] 更新 `docs/architecture.md`，补 `work` context 生命周期。
-- [x] 更新 `docs/architecture.md`，补 metadata namespace 治理建议。
-- [x] 更新 `docs/architecture.md`，补 Evolution risk policy checker。
-- [ ] 新增 `docs/adapter-contract.md`。
-- [ ] 在 `docs/context-core.md` 同步 `work` 生命周期和 context 淘汰策略。
-- [ ] 在公共 API 或 runtime 文档中同步 Run/Stage 状态字段。
-
-#### 异常发现
-- 如果 Stage 不进入核心模型，多 backend orchestration 的审计会变成自然语言描述，无法稳定回答每个 backend 在 run 中做了什么。
-- 如果没有状态机和失败策略，backend 超时、等待用户、部分写入后 fallback 等场景会在实现时变成隐式行为。
-
-#### Takeaway
-- 多 agent backend 编排的关键不是多调用几个 backend，而是把 stage、状态、handoff、adapter 和风险边界变成可审计契约。
-
----
-
-### T040
-
-#### 目标说明
-- 回答多 backend 编排中的两个边界问题：
-  - backend native session 是 stage-scoped 还是 AgentServer session-scoped。
-  - orchestrator 是 AgentServer Core 的一部分，还是可替换策略层。
-- 为 adapter contract 和 orchestrator policy 设计提供明确前提。
-
-#### 成功标准
-- 架构文档明确 native session 默认 `AgentServer session-scoped`，同一 backend 在同一 AgentServer session 中可以复用 native thread/session。
-- 架构文档明确 native session 不是真相源；canonical context、run ledger、stage result、workspace hard facts 才是可审计真相源。
-- 架构文档明确 adapter 必须支持 native session 丢失后的重建。
-- 架构文档明确 orchestrator 分为 Core Kernel 与 Policy 两层。
-- 架构文档明确 Evolution Engine 可以提 orchestrator policy proposal，但不能直接替换 Core Kernel。
-
-#### TODO
-- [x] 更新 `docs/architecture.md`，明确 native session scope。
-- [x] 更新 `docs/architecture.md`，明确 native session 不是真相源且必须可重建。
-- [x] 更新 `docs/architecture.md`，明确 stage-scoped native session 的适用场景。
-- [x] 更新 `docs/architecture.md`，明确 orchestrator core kernel / policy 分层。
-- [x] 更新 `docs/architecture.md`，明确 orchestrator policy 变更走 proposal / policy checker。
-- [ ] 后续在 `docs/adapter-contract.md` 同步 native session binding 接口。
-- [ ] 后续在 policy 文档或配置 schema 中定义 orchestrator policy 类型和风险等级。
-
-#### 异常发现
-- 如果 native session 完全 stage-scoped，会牺牲 Codex/Claude Code 等 backend 的内部连续性。
-- 如果 native session 完全作为 session 真相源，又会削弱 canonical context 和 handoff 的权威性。
-- 如果 orchestrator policy 直接写死在 Core，后续演进会让 Core 快速膨胀；如果完全外置，又会削弱状态机和 audit 的一致性。
-
-#### Takeaway
-- 推荐折中：native session 默认 session-scoped 复用但不可作为真相源；orchestrator core kernel 留在 Core，policy 可插拔且受 proposal/risk checker 约束。

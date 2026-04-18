@@ -20,22 +20,28 @@
 4. [Backend Runtime](./backend-runtime.md)
    讲 backend catalog、managed launcher、runtime supervisor、adapter 如何吸收 backend 差异，以及 smoke 验证。
 
-5. [Agent Server Runtime](./agent-server-runtime.md)
+5. [Adapter Contract](./adapter-contract.md)
+   讲 model-provider / agent-backend adapter、backend tier、capability、stage、native session、handoff、approval、sandbox 和失败策略。
+
+6. [Upstream Backend Overrides](./upstream-backend-overrides.md)
+   记录是否修改了 Codex、Claude Code、Gemini 等官方 backend 源码，以及官方版本更新后需要重放的 patch。
+
+7. [Agent Server Runtime](./agent-server-runtime.md)
    讲长期 agent 数据目录、session、run、context、maintenance 和恢复接口。
 
-6. [Harness Context Strategy](./context-harness.md)
+8. [Harness Context Strategy](./context-harness.md)
    讲自研/custom backend 内部可以实验的 context 策略。它不是 AgentServer Core 公共协议。
 
-7. [Deployment](./deployment.md)
+9. [Deployment](./deployment.md)
    讲云服务部署时如何分离代码、配置、数据、workspace 和 backend launchers，以及如何 prune 构建产物。
 
-8. [Client Worker](./client-worker.md)
+10. [Client Worker](./client-worker.md)
    讲 Mac workspace 留在用户端、Ubuntu AgentServer 只做服务控制面时的长期 tool router 设计。
 
-9. [Tutorial](./tutorial.md)
+11. [Tutorial](./tutorial.md)
    用代码和 HTTP client 跑一个最小 AgentServer agent。
 
-10. [Project Board](../PROJECT.md)
+12. [Project Board](../PROJECT.md)
    工程任务板在根目录，只记录任务状态和 TODO，不承载架构真相。
 
 ## 文档职责
@@ -46,6 +52,8 @@
 | `architecture.md` | 总体原则、边界、分层 | 任务 TODO |
 | `context-core.md` | Core 通用 context 契约 | v9 内部 harness 策略 |
 | `context-harness.md` | 自研 backend 的 harness 实验策略 | 所有 backend 的公共协议 |
+| `adapter-contract.md` | backend adapter、stage、capability、handoff、native session、failure contract | 具体 backend 原生协议实现 |
+| `upstream-backend-overrides.md` | 官方 backend 源码 patch 登记和重放线索 | adapter 设计细节 |
 | `backend-runtime.md` | backend 接入、launcher、supervisor、adapter、smoke 验证 | 对外 API 契约的重复定义 |
 | `agent-server-runtime.md` | agent/session/run/context 数据与 API | backend 原生协议 |
 | `deployment.md` | 服务部署、目录分离、workspace policy、构建产物清理 | backend 内部协议 |
@@ -57,4 +65,5 @@
 
 - 对外 API、backend id、capability、统一事件和工具原语：[`public-api.md`](./public-api.md)
 - backend 元数据代码真相源：[`core/runtime/backend-catalog.ts`](../core/runtime/backend-catalog.ts)
+- 官方 backend 源码 patch 与重放线索：[`upstream-backend-overrides.md`](./upstream-backend-overrides.md)
 - 工程任务与 TODO：[`PROJECT.md`](../PROJECT.md)

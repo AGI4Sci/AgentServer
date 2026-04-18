@@ -3,9 +3,14 @@ import {
   DEFAULT_BACKEND,
   getBackendCapabilities,
   listBackendDescriptors,
+  listRegisteredStrategicBackendIds,
+  listStrategicAgentBackends,
   type BackendCapabilities,
   type BackendDescriptor,
+  type BackendTier,
   type BackendType,
+  type ExecutionBackendKind,
+  type StrategicAgentBackend,
 } from '../core/runtime/backend-catalog.js';
 import {
   classifyTool,
@@ -213,6 +218,8 @@ export {
   classifyTool,
   createDefaultToolRoutingPolicy,
   getBackendCapabilities,
+  listRegisteredStrategicBackendIds,
+  listStrategicAgentBackends,
   planToolRoute,
 };
 
@@ -223,9 +230,12 @@ export type {
   AgentServerRunResult,
   BackendCapabilities,
   BackendDescriptor,
+  BackendTier,
   BackendType,
   CreateAgentRequest,
+  ExecutionBackendKind,
   SessionStreamEvent,
+  StrategicAgentBackend,
   ToolClassification,
   ToolKind,
   ToolOutputPolicy,
