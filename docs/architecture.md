@@ -302,6 +302,63 @@ agent-backend runtime
   适合 Codex app-server、Claude Code、未来完整 agent backend
 ```
 
+完整 `agent-backend runtime` 有一个硬原则：**在被调用的 stage 内，backend 的原生 agent 能力应尽量完整保留，接近人类直接使用该 agent 的能力边界。**
+
+这意味着 agent-backend adapter 不应把 Codex、Claude Code 这类 backend 降级成 `prompt -> text` 的普通模型调用。adapter 需要保留并桥接 backend 的原生执行面：
+
+- native agent loop
+- native tool calls / tool results
+- native thread/session
+- approval / permission requests
+- sandbox 或等价执行边界
+- 文件编辑、patch、shell、测试等代码工作流
+- streaming native events
+- abort / resume / recovery
+
+AgentServer 做的是统一控制平面，而不是低配替代 backend 的执行平面：
+
+| 能力 | 完整 agent backend 内部 | AgentServer 侧责任 |
+|---|---|---|
+| agent loop | backend 原生执行 | 编排 stage、timeout、cancel、retry/fallback |
+| tool 调用 | backend 原生工具或 tool bridge | 标准化事件、审计、权限边界 |
+| sandbox | backend 原生 sandbox，或运行在 AgentServer worker/sandbox 内 | 记录 sandbox policy、限制 workspace/worker 范围 |
+| approval | backend 原生请求 | 转成 AgentServer approval 事件和 audit |
+| native session | backend 原生 thread/session | 绑定 native session ref，但不把它作为真相源 |
+| context | backend 内部 context + AgentServer handoff | canonical context、handoff、workspace hard facts |
+
+因此 capability 必须显式声明，不能让轻量 provider 伪装成完整 agent backend。推荐能力字段包括：
+
+```ts
+type AgentBackendCapabilities = {
+  nativeLoop: boolean;
+  nativeTools: boolean;
+  nativeSandbox: boolean;
+  nativeApproval: boolean;
+  nativeSession: boolean;
+  fileEditing: boolean;
+  streamingEvents: boolean;
+  resumableSession: boolean;
+};
+```
+
+降级路径也必须显式：
+
+```text
+openai-codex direct provider
+  kind: model_provider
+  nativeLoop: false
+  nativeTools: false
+  nativeSandbox: false
+
+Codex app-server adapter
+  kind: agent_backend
+  nativeLoop: true
+  nativeTools: true
+  nativeSandbox: true
+```
+
+如果某个 backend 只能提供部分能力，它仍然可以接入，但 orchestrator 必须按真实 capability 路由，audit 也要记录本次 stage 使用的是完整 agent-backend 路径还是降级路径。
+
 adapter contract 后续应单独沉淀到 `docs/adapter-contract.md`。最小接口需要覆盖：
 
 - session/thread start 或 resume
@@ -310,6 +367,7 @@ adapter contract 后续应单独沉淀到 `docs/adapter-contract.md`。最小接
 - native event 到 normalized event 的映射
 - tool/approval/error 的结构化输出
 - `BackendStageResult` 和 handoff facts
+- capability declaration 与降级语义
 
 native session 作用域采用以下原则：
 
@@ -1218,6 +1276,8 @@ AgentServer Orchestrator
 - Codex app-server adapter 优先复用 Codex app-server / SDK 的完整 agent 能力。
 - Claude Code adapter 优先复用 Claude Code 的完整 agent 能力。
 - `openai-codex` direct provider 可以继续作为轻量/兼容/兜底路径。
+- 完整 agent-backend stage 内应保留 native loop、native tools、approval、sandbox、streaming events 和 resumable session；AgentServer 只做桥接、审计和外层控制。
+- 如果 adapter 无法保留这些能力，必须在 capability 中显式标记为部分能力或降级路径，不能伪装成完整 agent backend。
 - 跨 backend 的 stage 拆分、handoff、验证和最终汇总仍然归 AgentServer。
 - 同一个 AgentServer session 中，Codex/Claude Code adapter 可以复用各自的 native session；但这些 native session 是加速和连续性资源，不是 AgentServer 的上下文真相源。
 
