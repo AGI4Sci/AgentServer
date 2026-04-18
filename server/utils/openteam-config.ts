@@ -1,5 +1,18 @@
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
+import {
+  createDefaultToolRoutingPolicy,
+  isWorkerKind,
+  planToolRoute,
+  normalizeWorkerCapability,
+  type ToolRoutePlan,
+  type ToolRouteTarget,
+  type ToolRoutingPolicy,
+  type ToolRoutingRule,
+  type WorkerCapability,
+  type WorkerProfile,
+  type WorkspaceSpec,
+} from '../../core/runtime/tool-routing.js';
 import { PROJECT_ROOT } from './paths.js';
 
 export interface OpenTeamConfig {
@@ -52,6 +65,12 @@ export interface OpenTeamConfig {
     };
     workspace: {
       leaseHeartbeatIntervalMs: number;
+      mode: WorkspaceMode;
+      executionMode?: 'local' | 'client';
+      serverAllowedRoots: string[];
+      workspaces: WorkspaceSpec[];
+      workers: WorkerProfile[];
+      toolRouting: ToolRoutingPolicy | null;
     };
     openclaw: {
       gatewayBasePort: number;
@@ -99,6 +118,8 @@ export interface OpenTeamConfig {
     toolEndpoints: OpenTeamToolEndpointConfig[];
   };
 }
+
+export type WorkspaceMode = 'server' | 'client' | 'hybrid';
 
 export interface OpenTeamLlmEndpointConfig {
   baseUrl: string;
@@ -202,6 +223,17 @@ const DEFAULT_OPENTEAM_CONFIG: OpenTeamConfig = {
     },
     workspace: {
       leaseHeartbeatIntervalMs: 60_000,
+      mode: 'server',
+      serverAllowedRoots: [],
+      workspaces: [],
+      workers: [
+        {
+          id: 'backend-server',
+          kind: 'backend-server',
+          capabilities: ['network', 'metadata'],
+        },
+      ],
+      toolRouting: null,
     },
     openclaw: {
       gatewayBasePort: 18_789,
@@ -281,6 +313,11 @@ function normalizeConfig(raw: unknown): OpenTeamConfig {
   if (!isRecord(raw)) {
     throw new Error(`openteam.json must contain a JSON object: ${OPENTEAM_CONFIG_PATH}`);
   }
+  const rawRuntime = isRecord(raw.runtime) ? raw.runtime : undefined;
+  const rawWorkspace = rawRuntime && isRecord(rawRuntime.workspace) ? rawRuntime.workspace : undefined;
+  const hasExplicitWorkspaceMode = Boolean(
+    rawWorkspace && Object.prototype.hasOwnProperty.call(rawWorkspace, 'mode'),
+  );
   const normalized = deepMerge(
     cloneDefaultConfig() as unknown as Record<string, unknown>,
     raw as Record<string, unknown>,
@@ -291,7 +328,147 @@ function normalizeConfig(raw: unknown): OpenTeamConfig {
     fallbacks: llmFallbacks,
   };
   normalized.integrations.toolEndpoints = normalizeToolEndpoints(normalized.integrations.toolEndpoints);
+  normalized.runtime.workspace = {
+    ...normalized.runtime.workspace,
+    mode: normalizeWorkspaceMode(
+      hasExplicitWorkspaceMode ? normalized.runtime.workspace.mode : undefined,
+      normalized.runtime.workspace.executionMode,
+    ),
+    serverAllowedRoots: Array.isArray(normalized.runtime.workspace.serverAllowedRoots)
+      ? normalized.runtime.workspace.serverAllowedRoots.map((item) => String(item || '').trim()).filter(Boolean)
+      : [],
+    workspaces: normalizeWorkspaceSpecs(normalized.runtime.workspace.workspaces),
+    workers: normalizeWorkerProfiles(normalized.runtime.workspace.workers),
+    toolRouting: normalizeToolRoutingPolicy(normalized.runtime.workspace.toolRouting),
+  };
   return normalized;
+}
+
+function normalizeWorkspaceMode(mode: unknown, legacyExecutionMode: unknown): WorkspaceMode {
+  const envMode = process.env.AGENT_SERVER_WORKSPACE_MODE?.trim();
+  const raw = String(envMode || mode || '').trim();
+  if (raw === 'server' || raw === 'client' || raw === 'hybrid') {
+    return raw;
+  }
+  if (legacyExecutionMode === 'client') {
+    return 'client';
+  }
+  if (legacyExecutionMode === 'local') {
+    return 'server';
+  }
+  return 'server';
+}
+
+function normalizeWorkspaceSpecs(input: unknown): WorkspaceSpec[] {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+  const workspaces: WorkspaceSpec[] = [];
+  const seen = new Set<string>();
+  for (const entry of input) {
+    if (!isRecord(entry)) {
+      continue;
+    }
+    const id = String(entry.id || '').trim();
+    const root = String(entry.root || '').trim();
+    const ownerWorker = String(entry.ownerWorker || '').trim();
+    if (!id || !root || !ownerWorker || seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    workspaces.push({
+      id,
+      root,
+      ownerWorker,
+      ...(typeof entry.artifactRoot === 'string' && entry.artifactRoot.trim() ? { artifactRoot: entry.artifactRoot.trim() } : {}),
+    });
+  }
+  return workspaces;
+}
+
+function normalizeWorkerProfiles(input: unknown): WorkerProfile[] {
+  const defaults: WorkerProfile[] = [
+    {
+      id: 'backend-server',
+      kind: 'backend-server',
+      capabilities: ['network', 'metadata'],
+    },
+  ];
+  if (!Array.isArray(input)) {
+    return defaults;
+  }
+  const workers = new Map<string, WorkerProfile>(defaults.map((worker) => [worker.id, worker]));
+  for (const entry of input) {
+    if (!isRecord(entry)) {
+      continue;
+    }
+    const id = String(entry.id || '').trim();
+    const kind = isWorkerKind(entry.kind) ? entry.kind : null;
+    if (!id || !kind) {
+      continue;
+    }
+    const capabilities = Array.isArray(entry.capabilities)
+      ? entry.capabilities.map(normalizeWorkerCapability).filter((item): item is WorkerCapability => Boolean(item))
+      : [];
+    workers.set(id, {
+      id,
+      kind,
+      capabilities,
+      ...(Array.isArray(entry.allowedRoots) ? { allowedRoots: entry.allowedRoots.map((item) => String(item || '').trim()).filter(Boolean) } : {}),
+      ...(typeof entry.host === 'string' && entry.host.trim() ? { host: entry.host.trim() } : {}),
+      ...(Number.isFinite(Number(entry.port)) && Number(entry.port) > 0 ? { port: Number(entry.port) } : {}),
+      ...(typeof entry.user === 'string' && entry.user.trim() ? { user: entry.user.trim() } : {}),
+      ...(typeof entry.identityFile === 'string' && entry.identityFile.trim() ? { identityFile: entry.identityFile.trim() } : {}),
+      ...(typeof entry.endpoint === 'string' && entry.endpoint.trim() ? { endpoint: entry.endpoint.trim() } : {}),
+      ...(typeof entry.authToken === 'string' && entry.authToken.trim() ? { authToken: entry.authToken.trim() } : {}),
+    });
+  }
+  return [...workers.values()];
+}
+
+function normalizeToolRouteTarget(input: unknown): ToolRouteTarget | null {
+  if (!isRecord(input)) {
+    return null;
+  }
+  const primary = String(input.primary || '').trim();
+  if (!primary) {
+    return null;
+  }
+  return {
+    primary,
+    ...(Array.isArray(input.fallbacks) ? { fallbacks: input.fallbacks.map((item) => String(item || '').trim()).filter(Boolean) } : {}),
+  };
+}
+
+function normalizeToolRoutingPolicy(input: unknown): ToolRoutingPolicy | null {
+  if (!isRecord(input)) {
+    return null;
+  }
+  const defaultRoute = normalizeToolRouteTarget(input.default);
+  if (!defaultRoute) {
+    return null;
+  }
+  const rules = Array.isArray(input.rules)
+    ? input.rules
+        .map((rule): ToolRoutingRule | null => {
+          if (!isRecord(rule)) {
+            return null;
+          }
+          const tools = Array.isArray(rule.tools)
+            ? rule.tools.map((item) => String(item || '').trim()).filter(Boolean)
+            : [];
+          const target = normalizeToolRouteTarget(rule);
+          if (tools.length === 0 || !target) {
+            return null;
+          }
+          return { tools, ...target };
+        })
+        .filter((rule): rule is ToolRoutingRule => Boolean(rule))
+    : [];
+  return {
+    default: defaultRoute,
+    rules,
+  };
 }
 
 function normalizeLlmEndpointConfig(
@@ -419,6 +596,42 @@ export function listConfiguredLlmEndpoints(config?: OpenTeamConfig): OpenTeamLlm
     getPrimaryLlmEndpoint(resolved),
     ...normalizeLlmFallbacks(resolved.llm.fallbacks),
   ];
+}
+
+export function listConfiguredWorkspaces(config?: OpenTeamConfig): WorkspaceSpec[] {
+  const resolved = config ?? loadOpenTeamConfig();
+  return resolved.runtime.workspace.workspaces.map((workspace) => ({ ...workspace }));
+}
+
+export function getConfiguredWorkspace(workspaceId: string, config?: OpenTeamConfig): WorkspaceSpec | null {
+  const id = workspaceId.trim();
+  if (!id) {
+    return null;
+  }
+  return listConfiguredWorkspaces(config).find((workspace) => workspace.id === id) ?? null;
+}
+
+export function listConfiguredWorkers(config?: OpenTeamConfig): WorkerProfile[] {
+  const resolved = config ?? loadOpenTeamConfig();
+  return resolved.runtime.workspace.workers.map((worker) => ({ ...worker }));
+}
+
+export function planConfiguredToolRoute(
+  toolName: string,
+  workspaceId: string,
+  config?: OpenTeamConfig,
+): ToolRoutePlan {
+  const resolved = config ?? loadOpenTeamConfig();
+  const workspace = getConfiguredWorkspace(workspaceId, resolved);
+  if (!workspace) {
+    throw new Error(`Workspace not found: ${workspaceId}`);
+  }
+  return planToolRoute({
+    toolName,
+    workspace,
+    workers: resolved.runtime.workspace.workers,
+    policy: resolved.runtime.workspace.toolRouting || createDefaultToolRoutingPolicy(workspace),
+  });
 }
 
 export function resolveConfiguredServerPort(): number {

@@ -259,6 +259,40 @@ Different native backends may internally name or route tools differently. AgentS
 
 Path-oriented primitives resolve relative paths against the agent workspace. `web_search` currently tries DuckDuckGo HTML first and falls back to Bing when the first provider is unreachable.
 
+For Mac / cloud backend / SSH GPU layouts, see [Client Worker 与 Tool Routing](./client-worker.md). The short version is: backend is the thinker, workspace owns data/results, workers execute tools, and tool routing chooses primary/fallback workers per tool call.
+
+The SDK exports the route planning helper:
+
+```ts
+import { planToolRoute } from '@agi4sci/agent-server';
+
+const plan = planToolRoute({
+  toolName: 'web_search',
+  workspace: {
+    id: 'gpu-exp',
+    root: '/home/ubuntu/experiments/run-001',
+    ownerWorker: 'gpu-a100',
+  },
+  workers: [
+    { id: 'backend-server', kind: 'backend-server', capabilities: ['network', 'metadata'] },
+    { id: 'gpu-a100', kind: 'ssh', host: 'gpu.example.com', capabilities: ['filesystem', 'shell', 'gpu'] },
+  ],
+});
+
+// plan.primaryWorker === 'backend-server'
+```
+
+The server runtime also has a thin routed executor for the worker kinds that are implemented today. It currently executes `backend-server` network tools plus `server`, `ssh`, and `client-worker` workspace tools; `container` and `remote-service` remain explicit plan-only route targets until their executors are added.
+
+The bundled client-worker service exposes `GET /health`, authenticated `GET /capabilities`, and authenticated `POST /tool-call` when `AGENT_SERVER_CLIENT_WORKER_TOKEN` is set. AgentServer sends the configured worker `authToken` as a bearer token.
+
+```bash
+npm run smoke:client-worker
+npm run smoke:deployment-workers
+npm run smoke:tool-routing-config
+npm run smoke:tool-executor
+```
+
 Example normalized event sequence:
 
 ```ts

@@ -15,6 +15,10 @@ export function getBackendRootDir(backend: ManagedBackendName): string {
 }
 
 export function getBackendStateDir(backend: ManagedBackendName): string {
+  const stateRoot = process.env.AGENT_SERVER_BACKEND_STATE_DIR?.trim();
+  if (stateRoot) {
+    return join(stateRoot, backend);
+  }
   return join(getBackendRootDir(backend), 'openteam-local');
 }
 

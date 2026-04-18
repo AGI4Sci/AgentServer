@@ -46,6 +46,8 @@ console.log(agent.listBackends().map((backend) => backend.id));
 
 The working directory must already exist. AgentServer stores local agent state under `server/agent_server/data/`.
 
+For production deployment, keep code/config/data/workspaces/backend launchers separate. See [Deployment](./deployment.md).
+
 ## 5. Create Or Reuse An Agent
 
 For one-shot tasks, `runTask()` can create/reconcile the agent for you from `agentId` and the SDK defaults. If your host project wants explicit lifecycle control, create the agent first:

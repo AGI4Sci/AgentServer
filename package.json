@@ -33,6 +33,9 @@
     "dev:8080": "PORT=8080 npm run dev",
     "build": "tsc",
     "build:backend-binaries": "node --import tsx scripts/build-openteam-backends.ts",
+    "check:deployment": "node --import tsx scripts/check-deployment.ts",
+    "client-worker": "node --import tsx scripts/client-worker.ts",
+    "prune:backend-artifacts": "node --import tsx scripts/prune-backend-build-artifacts.ts",
     "start": "node dist/server/index.js",
     "runtime-supervisor": "node --import tsx server/runtime-supervisor/index.ts",
     "smoke:agent-server": "node --import tsx scripts/smoke-agent-server.ts",
@@ -42,6 +45,11 @@
     "smoke:agent-sdk:all-backends": "node --import tsx scripts/smoke-agent-sdk-all-backends.ts",
     "smoke:agent-sdk:installed": "node --import tsx scripts/smoke-agent-sdk-installed.ts",
     "smoke:openteam-agent": "node --import tsx scripts/smoke-openteam-agent-backend.ts",
+    "smoke:client-worker": "node --import tsx scripts/smoke-client-worker-service.ts",
+    "smoke:deployment-workers": "node --import tsx scripts/smoke-deployment-worker-routing.ts",
+    "smoke:tool-executor": "node --import tsx scripts/smoke-tool-executor.ts",
+    "smoke:tool-routing-config": "node --import tsx scripts/smoke-tool-routing-config.ts",
+    "smoke:workspace-policy": "node --import tsx scripts/smoke-workspace-policy.ts",
     "test": "node --import tsx --test tests/*.test.ts"
   },
   "dependencies": {

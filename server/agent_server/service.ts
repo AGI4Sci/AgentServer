@@ -1,8 +1,10 @@
 import { randomUUID } from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { resolve, relative } from 'path';
 import {
   DEFAULT_BACKEND,
+  isBackendEnabled,
   normalizeBackendType,
 } from '../../core/runtime/backend-catalog.js';
 import type { SessionOutput, SessionStreamEvent } from '../runtime/session-types.js';
@@ -279,6 +281,13 @@ function resolveAgentMessageContextPolicy(policy?: AgentMessageContextPolicy | n
 
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function pathIsInside(child: string, parent: string): boolean {
+  const childPath = resolve(child);
+  const parentPath = resolve(parent);
+  const rel = relative(parentPath, childPath);
+  return rel === '' || (!rel.startsWith('..') && !rel.startsWith('/') && rel !== '..');
 }
 
 function containsSemanticTerm(text: string, term: string): boolean {
@@ -770,6 +779,28 @@ export class AgentServerService {
     if (!workingDirectory) {
       throw new Error('agent.workspace or agent.workingDirectory is required');
     }
+    const workspacePolicy = loadOpenTeamConfig().runtime.workspace;
+    if (workspacePolicy.mode === 'client') {
+      throw new Error([
+        'Server-side workspace tools are disabled because runtime.workspace.mode is "client".',
+        'Configure a worker route for this workspace, run AgentServer near the workspace, or sync/mount the workspace to the server before calling runTask.',
+      ].join(' '));
+    }
+    if (workspacePolicy.mode === 'hybrid') {
+      throw new Error([
+        'runtime.workspace.mode "hybrid" requires a client-side worker/tool router, which is not implemented yet.',
+        'Use mode "server" for server-side workspaces or keep routing as a route-plan only until worker executors are implemented.',
+      ].join(' '));
+    }
+    if (workspacePolicy.serverAllowedRoots.length > 0) {
+      const allowed = workspacePolicy.serverAllowedRoots.some((root) => pathIsInside(workingDirectory, root));
+      if (!allowed) {
+        throw new Error([
+          `Workspace is outside runtime.workspace.serverAllowedRoots: ${workingDirectory}`,
+          `Allowed roots: ${workspacePolicy.serverAllowedRoots.join(', ')}`,
+        ].join(' '));
+      }
+    }
 
     const metadata = {
       ...(request.metadata ?? {}),
@@ -777,11 +808,15 @@ export class AgentServerService {
       ...(request.runtime?.metadata ? { runtime: request.runtime.metadata } : {}),
       ...(request.agent?.metadata ? { agent: request.agent.metadata } : {}),
     };
+    const backend = normalizeBackendType(request.runtime?.backend ?? request.agent?.backend, DEFAULT_BACKEND);
+    if (!isBackendEnabled(backend)) {
+      throw new Error(`Backend is disabled by AGENT_SERVER_ENABLED_BACKENDS: ${backend}`);
+    }
     const result = await this.runAutonomousTask({
       agent: {
         id: request.agent?.id,
         name: request.agent?.name,
-        backend: request.runtime?.backend ?? request.agent?.backend,
+        backend,
         workingDirectory,
         runtimeTeamId: request.agent?.runtimeTeamId,
         runtimeAgentId: request.agent?.runtimeAgentId,

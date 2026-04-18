@@ -1,9 +1,12 @@
 export {
   BACKEND_CATALOG,
   DEFAULT_BACKEND,
+  classifyTool,
+  createDefaultToolRoutingPolicy,
   createAgentClient,
   getBackendCapabilities,
   listSupportedBackends,
+  planToolRoute,
 } from './sdk/index.js';
 
 export type {
@@ -20,4 +23,16 @@ export type {
   CreateAgentClientOptions,
   CreateAgentRequest,
   SessionStreamEvent,
+  ToolClassification,
+  ToolKind,
+  ToolOutputPolicy,
+  ToolRoutePlan,
+  ToolRouteTarget,
+  ToolRouteWorkerPlan,
+  ToolRoutingPolicy,
+  ToolRoutingRule,
+  WorkerCapability,
+  WorkerKind,
+  WorkerProfile,
+  WorkspaceSpec,
 } from './sdk/index.js';

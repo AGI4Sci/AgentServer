@@ -2,10 +2,28 @@ import {
   BACKEND_CATALOG,
   DEFAULT_BACKEND,
   getBackendCapabilities,
+  listBackendDescriptors,
   type BackendCapabilities,
   type BackendDescriptor,
   type BackendType,
 } from '../core/runtime/backend-catalog.js';
+import {
+  classifyTool,
+  createDefaultToolRoutingPolicy,
+  planToolRoute,
+  type ToolClassification,
+  type ToolKind,
+  type ToolOutputPolicy,
+  type ToolRoutePlan,
+  type ToolRouteTarget,
+  type ToolRouteWorkerPlan,
+  type ToolRoutingPolicy,
+  type ToolRoutingRule,
+  type WorkerCapability,
+  type WorkerKind,
+  type WorkerProfile,
+  type WorkspaceSpec,
+} from '../core/runtime/tool-routing.js';
 import {
   createAgentServerHttpClient,
   type AgentServerHttpClient,
@@ -108,7 +126,7 @@ function buildRunRequest(
 }
 
 function listBackends(): BackendDescriptor[] {
-  return BACKEND_CATALOG.map((backend) => ({ ...backend }));
+  return listBackendDescriptors();
 }
 
 export function listSupportedBackends(): BackendDescriptor[] {
@@ -192,7 +210,10 @@ export function createAgentClient(options: CreateAgentClientOptions = {}): Agent
 export {
   BACKEND_CATALOG,
   DEFAULT_BACKEND,
+  classifyTool,
+  createDefaultToolRoutingPolicy,
   getBackendCapabilities,
+  planToolRoute,
 };
 
 export type {
@@ -205,4 +226,16 @@ export type {
   BackendType,
   CreateAgentRequest,
   SessionStreamEvent,
+  ToolClassification,
+  ToolKind,
+  ToolOutputPolicy,
+  ToolRoutePlan,
+  ToolRouteTarget,
+  ToolRouteWorkerPlan,
+  ToolRoutingPolicy,
+  ToolRoutingRule,
+  WorkerCapability,
+  WorkerKind,
+  WorkerProfile,
+  WorkspaceSpec,
 };

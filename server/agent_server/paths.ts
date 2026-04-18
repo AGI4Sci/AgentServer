@@ -2,7 +2,8 @@ import { join } from 'path';
 import { PROJECT_ROOT } from '../utils/paths.js';
 
 export const AGENT_SERVER_ROOT = join(PROJECT_ROOT, 'server', 'agent_server');
-export const AGENT_SERVER_DATA_DIR = join(AGENT_SERVER_ROOT, 'data');
+export const AGENT_SERVER_DATA_DIR = process.env.AGENT_SERVER_DATA_DIR?.trim()
+  || join(AGENT_SERVER_ROOT, 'data');
 export const AGENT_SERVER_AGENTS_DIR = join(AGENT_SERVER_DATA_DIR, 'agents');
 export const AGENT_SERVER_EVOLUTION_DIR = join(AGENT_SERVER_DATA_DIR, 'evolution');
 export const AGENT_SERVER_EVOLUTION_PROPOSALS_DIR = join(AGENT_SERVER_EVOLUTION_DIR, 'proposals');

@@ -1,6 +1,6 @@
 import {
-  BACKEND_CATALOG,
   DEFAULT_BACKEND,
+  listEnabledBackendIds,
   normalizeBackendType,
   type BackendType,
 } from '../../core/runtime/backend-catalog.js';
@@ -48,7 +48,7 @@ export function resolveTeamSessionClientType(
 }
 
 export function listSupportedBackends(): BackendType[] {
-  return BACKEND_CATALOG.map((item) => item.id);
+  return [...listEnabledBackendIds()];
 }
 
 export function getSessionRunner(clientType: SessionClientType): SessionRunner {

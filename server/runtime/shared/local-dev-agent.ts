@@ -1,11 +1,12 @@
 import {
-  executeLocalDevPrimitiveCall,
   extractAndNormalizeLocalDevPrimitiveCall,
   summarizeLocalDevPrimitiveCall,
 } from './local-dev-primitives.js';
 import { loadOpenTeamConfig } from '../../utils/openteam-config.js';
 import { appendFileSync, mkdirSync } from 'fs';
-import { join } from 'path';
+import { join, resolve } from 'path';
+import { executeRoutedToolCall } from '../tool-executor.js';
+import type { ToolRoutingPolicy, WorkerProfile, WorkspaceSpec } from '../../../core/runtime/tool-routing.js';
 
 export type LocalDevChatMessage = {
   role: 'system' | 'user' | 'assistant';
@@ -46,6 +47,12 @@ type SourceTaskDriftState = {
   isSourceTask: boolean;
   localExplorationCount: number;
   remoteEvidenceCount: number;
+};
+
+type LocalDevRoutingContext = {
+  workspace: WorkspaceSpec;
+  workers: WorkerProfile[];
+  policy?: ToolRoutingPolicy;
 };
 
 export type LocalDevRunPolicy = {
@@ -244,6 +251,55 @@ function pathLooksLikeRelevantScpLocalContext(path: string): boolean {
     || normalized.endsWith('/docs/t006_scp_biochem_tools_summary.md')
     || normalized.endsWith('/project.md')
     || normalized.includes('/openteam.json');
+}
+
+function pathIsInside(child: string, parent: string): boolean {
+  const normalizedChild = resolve(child).replace(/\/+$/, '');
+  const normalizedParent = resolve(parent).replace(/\/+$/, '');
+  return normalizedChild === normalizedParent || normalizedChild.startsWith(`${normalizedParent}/`);
+}
+
+function ensureBackendAndLocalServerWorkers(workers: WorkerProfile[], cwd: string): WorkerProfile[] {
+  const byId = new Map(workers.map((worker) => [worker.id, worker]));
+  if (!byId.has('backend-server')) {
+    byId.set('backend-server', {
+      id: 'backend-server',
+      kind: 'backend-server',
+      capabilities: ['network', 'metadata'],
+    });
+  }
+  if (!byId.has('server-local')) {
+    byId.set('server-local', {
+      id: 'server-local',
+      kind: 'server',
+      allowedRoots: [cwd],
+      capabilities: ['filesystem', 'shell', 'network', 'metadata'],
+    });
+  }
+  return [...byId.values()];
+}
+
+function resolveLocalDevRoutingContext(cwd: string): LocalDevRoutingContext {
+  const absoluteCwd = resolve(cwd || process.cwd());
+  const config = loadOpenTeamConfig();
+  const workspace = config.runtime.workspace.workspaces.find((candidate) => pathIsInside(absoluteCwd, candidate.root));
+  if (workspace) {
+    return {
+      workspace,
+      workers: config.runtime.workspace.workers,
+      policy: config.runtime.workspace.toolRouting || undefined,
+    };
+  }
+
+  return {
+    workspace: {
+      id: 'local-dev',
+      root: absoluteCwd,
+      ownerWorker: 'server-local',
+    },
+    workers: ensureBackendAndLocalServerWorkers(config.runtime.workspace.workers, absoluteCwd),
+    policy: undefined,
+  };
 }
 
 function isRemoteEvidenceOrientedTool(toolName: string, args: Record<string, string>): boolean {
@@ -483,12 +539,39 @@ export async function runLocalDevToolAgentWithRequester(params: {
       toolName: toolCall.toolName,
       detail: toolDetail,
     });
-    const toolResult = await executeLocalDevPrimitiveCall(toolCall, { cwd: params.cwd }).catch((error) => ({
+    const routing = resolveLocalDevRoutingContext(params.cwd);
+    const routedResult = await executeRoutedToolCall({
+      toolName: toolCall.toolName,
+      toolArgs: toolCall.args,
+      workspace: routing.workspace,
+      workers: routing.workers,
+      policy: routing.policy,
+    }).catch((error) => ({
       ok: false,
       output: error instanceof Error ? error.message : String(error),
+      route: null,
+      workerId: undefined,
+      attempts: [],
+      writeback: {
+        status: 'not-needed' as const,
+        reason: 'tool did not execute',
+      },
     })).finally(() => {
       stopToolHeartbeat?.();
     });
+    const routeDetail = routedResult.route
+      ? [
+          `workspace=${routedResult.route.workspaceId}`,
+          `primary=${routedResult.route.primaryWorker}`,
+          routedResult.route.fallbackWorkers.length > 0 ? `fallbacks=${routedResult.route.fallbackWorkers.join(',')}` : null,
+          routedResult.workerId ? `worker=${routedResult.workerId}` : null,
+          `writeback=${routedResult.writeback.status}`,
+        ].filter(Boolean).join(' ')
+      : 'route=unavailable';
+    const toolResult = {
+      ok: routedResult.ok,
+      output: `${routedResult.output}\n\n[route] ${routeDetail}`,
+    };
     params.hooks?.onToolResult?.(
       toolCall.toolName,
       toolResult.output,

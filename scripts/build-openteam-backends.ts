@@ -4,8 +4,15 @@ import { dirname, join, resolve } from 'node:path';
 
 const root = resolve(process.cwd());
 const backendDir = join(root, 'server', 'backend');
-const binDir = join(backendDir, 'bin');
+const binDir = resolve(process.env.OPENTEAM_BACKEND_BIN_DIR?.trim() || join(backendDir, 'bin'));
 const isWindows = process.platform === 'win32';
+const selectedBackendNames = new Set(
+  (process.env.AGENT_SERVER_BUILD_BACKENDS || 'codex,claude_code_rust,zeroclaw,claude_code,openclaw,hermes_agent')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean),
+);
+const pruneAfterBuild = process.env.AGENT_SERVER_PRUNE_AFTER_BUILD !== '0';
 
 type RustBuildTarget = {
   name: string;
@@ -70,6 +77,9 @@ ${body}
 
 function buildRustTargets(): void {
   for (const target of rustTargets) {
+    if (!selectedBackendNames.has(target.name.replace(/^openteam_/, ''))) {
+      continue;
+    }
     console.log(`[build] ${target.name}`);
     run('cargo', target.cargoArgs, target.crateDir);
     const builtBinary = join(
@@ -198,9 +208,19 @@ exec python -m acp_adapter "$@"
 function main(): void {
   ensureDir(binDir);
   buildRustTargets();
-  buildClaudeCodeLauncher();
-  buildOpenClawLauncher();
-  buildHermesAgentLauncher();
+  if (selectedBackendNames.has('claude_code')) {
+    buildClaudeCodeLauncher();
+  }
+  if (selectedBackendNames.has('openclaw')) {
+    buildOpenClawLauncher();
+  }
+  if (selectedBackendNames.has('hermes_agent')) {
+    buildHermesAgentLauncher();
+  }
+  if (pruneAfterBuild) {
+    console.log('[prune] removing backend build artifacts');
+    run(process.execPath, ['--import', 'tsx', join(root, 'scripts', 'prune-backend-build-artifacts.ts')], root);
+  }
   console.log(`[done] backend launchers are available in ${binDir}`);
 }
 

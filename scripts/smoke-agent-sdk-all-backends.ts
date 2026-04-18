@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { BACKEND_CATALOG, type BackendType } from '../core/runtime/backend-catalog.js';
+import { listBackendDescriptors, type BackendType } from '../core/runtime/backend-catalog.js';
 import {
   getManagedBackendBinDir,
   resolveManagedBackendExecutableForBackend,
@@ -158,10 +158,11 @@ await new Promise<void>((resolve, reject) => {
 const client = createAgentClient({
   baseUrl: `http://127.0.0.1:${apiPort}`,
 });
+const enabledBackends = listBackendDescriptors();
 const supportedBackendIds = listSupportedBackends().map((backend) => backend.id).join(',');
-const catalogBackendIds = BACKEND_CATALOG.map((backend) => backend.id).join(',');
-if (supportedBackendIds !== catalogBackendIds) {
-  throw new Error(`SDK backend list mismatch: supported=${supportedBackendIds} catalog=${catalogBackendIds}`);
+const enabledBackendIds = enabledBackends.map((backend) => backend.id).join(',');
+if (supportedBackendIds !== enabledBackendIds) {
+  throw new Error(`SDK backend list mismatch: supported=${supportedBackendIds} enabled=${enabledBackendIds}`);
 }
 
 const results: Array<{
@@ -171,7 +172,7 @@ const results: Array<{
 }> = [];
 
 try {
-  for (const backend of BACKEND_CATALOG) {
+  for (const backend of enabledBackends) {
     const executable = resolveManagedBackendExecutableForBackend(backend.id);
     if (backend.capabilities.managedLauncher && !executable) {
       results.push({
@@ -240,8 +241,8 @@ try {
   if (failed.length > 0) {
     throw new Error(`${failed.length} SDK all-backend smoke case(s) failed`);
   }
-  if (passed.length !== BACKEND_CATALOG.length) {
-    throw new Error(`Expected all ${BACKEND_CATALOG.length} backends to pass; passed=${passed.length} skipped=${skipped.length}`);
+  if (passed.length !== enabledBackends.length) {
+    throw new Error(`Expected all ${enabledBackends.length} enabled backends to pass; passed=${passed.length} skipped=${skipped.length}`);
   }
 } finally {
   await closeHttpServer(apiServer);

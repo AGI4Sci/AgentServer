@@ -25,6 +25,7 @@
 - `T010`：统一整理项目文档到 `docs/`（已完成）：新增 docs 索引，合并 runtime/backend 文档，任务板保留在根目录，消除过期路径和 backend 数量冲突；最近更新 `2026-04-18`
 - `T011`：集成 `openteam_agent` 自研 backend（已完成）：将 AI SDK runtime vendored 到本项目内，实现可独立运行的第 7 个 backend，并接入统一事件和工具桥；最近更新 `2026-04-18`
 - `T012`：Agent SDK 化（已完成）：整理包根 public SDK 入口，提供 createAgentClient / runText / runTask / backend capabilities 等薄接口；最近更新 `2026-04-18`
+- `T025`：最终 Tool Routing 四元模型（已完成）：以 `backend / workspace / worker / route` 作为唯一模型，替换旧 placement/profile 设计；最近更新 `2026-04-18`
 
 ---
 
@@ -580,3 +581,441 @@
 
 #### Takeaway
 - all-backends 支持不仅是 backend adapter 能跑，还要求共享 AgentServer Core 的持久化层能承受多 backend 连续写入。
+
+---
+
+### T019
+
+#### 目标说明
+- 为云服务部署补齐代码、配置、数据、workspace、backend binaries 分离能力。
+- 自动化清理 backend build 中间产物，避免云服务器 build 后长期保留巨大 `target/` / `node_modules` 缓存。
+- 明确云端 workspace policy：如果 workspace 留在用户端，云端 AgentServer 不应默认执行本地文件/命令工具。
+
+#### 成功标准
+- `AGENT_SERVER_DATA_DIR` 可配置 AgentServer 持久化数据目录。
+- `AGENT_SERVER_BACKEND_STATE_DIR` 可配置 backend/supervisor state 目录。
+- `OPENTEAM_BACKEND_BIN_DIR` 可作为 build 输出目录和运行时 launcher 目录。
+- `runtime.workspace.mode="client"` 时拒绝 server-side workspace tools，旧 `executionMode="client"` 保持兼容。
+- `runtime.workspace.serverAllowedRoots` 可限制云端 server-side workspace 根目录。
+- `AGENT_SERVER_ENABLED_BACKENDS` 控制服务暴露和允许调用的 backend。
+- 存在 `npm run prune:backend-artifacts` 自动清理构建中间产物。
+- `npm run build:backend-binaries` 默认 build 后 prune，并支持 `AGENT_SERVER_BUILD_BACKENDS` 选择 backend。
+- 存在 `npm run check:deployment` 检查部署配置。
+- 存在 `docs/deployment.md` 说明部署目录、workspace 策略和 prune 流程。
+
+#### TODO
+- [x] 在任务板登记 T019。
+- [x] 给 AgentServer 数据目录增加 `AGENT_SERVER_DATA_DIR`。
+- [x] 给 backend state 增加 `AGENT_SERVER_BACKEND_STATE_DIR`。
+- [x] 给 workspace policy 增加 `mode` / `serverAllowedRoots`，并兼容旧 `executionMode`。
+- [x] 在 `runTask()` 中执行 workspace policy 校验。
+- [x] 增加 `AGENT_SERVER_ENABLED_BACKENDS`，让云部署只暴露实际启用 backend。
+- [x] 新增 `scripts/prune-backend-build-artifacts.ts`。
+- [x] 新增 `scripts/check-deployment.ts`。
+- [x] 新增 `smoke:workspace-policy`，验证云端 client workspace mode 不会执行 server-side tools。
+- [x] 更新 `build-openteam-backends.ts`，支持外部 bin、选择 backend、自动 prune。
+- [x] 新增 `docs/deployment.md` 并接入 README/docs index。
+
+#### 异常发现
+- 云服务上的工具执行位置默认是云服务器文件系统，不是用户端 workspace。
+- 如果用户端 workspace 不同步/挂载到云端，必须走 client-side worker/sync 模式；否则云端应拒绝任务，避免误操作。
+
+#### Takeaway
+- AgentServer service 适合做 backend runtime host；用户端 workspace 需要本地 agent、同步层或挂载层来承接，不能靠云服务直接“看见”用户本地文件。
+
+---
+
+### T020
+
+#### 目标说明
+- 将 workspace 执行位置正式建模为用户可选择的模式，而不是含糊的 local/remote。
+- 支持 `server` / `client` / `hybrid` 三种模式命名。
+- 保留旧 `executionMode` 配置兼容，但新文档和新代码以 `mode` 为主。
+
+#### 成功标准
+- `runtime.workspace.mode` 支持 `server` / `client` / `hybrid`。
+- `AGENT_SERVER_WORKSPACE_MODE` 可覆盖配置。
+- `executionMode: "local"` 兼容映射到 `mode: "server"`。
+- `executionMode: "client"` 兼容映射到 `mode: "client"`。
+- `server` mode 允许 server-side tools，并可用 `serverAllowedRoots` 限制。
+- `client` mode 拒绝 server-side workspace tools，并提示需要 client worker/sync/mount。
+- `hybrid` mode 明确保留，当前拒绝并提示需要未来 tool router/client worker。
+- 后续由 T025 的 `workspaces / workers / toolRouting` 统一承接 worker/tool router 配置契约。
+- 部署文档解释三种模式的使用方式。
+
+#### TODO
+- [x] 在任务板登记 T020。
+- [x] 更新 config type/default/normalize，加入 `runtime.workspace.mode`。
+- [x] 支持 `AGENT_SERVER_WORKSPACE_MODE`。
+- [x] 更新 `runTask()` workspace mode 校验。
+- [x] 更新 `check:deployment` 输出。
+- [x] 更新 `smoke:workspace-policy`。
+- [x] 在 `smoke:workspace-policy` 中覆盖旧 `executionMode` 兼容。
+- [x] 增加早期 worker 配置骨架和部署检查输出；已由 T025 最终模型替换。
+- [x] 更新 `docs/deployment.md`。
+
+#### 异常发现
+- “local” 容易歧义：对云服务来说 local 是服务器，对用户来说 local 是用户电脑。对外文档应统一使用 `server` / `client`。
+
+#### Takeaway
+- workspace mode 是产品级选择：用户必须知道工具在哪里执行，不能让 AgentServer 自动猜。
+
+---
+
+### T021
+
+#### 目标说明
+- 推进长期推荐形态：Ubuntu AgentServer 只做服务控制面，Mac client worker 负责真实 workspace 工具执行。
+- 避免服务器产生项目构建垃圾、临时 patch 文件、命令副作用和本地 workspace cache。
+- 保持 AgentServer Core 通用：tool router 是边界层，不把 Mac/Ubuntu 特例写进 backend 内部。
+
+#### 成功标准
+- 定义 client worker/tool router 的最小协议：注册、心跳、capabilities、tool-call、tool-result、cancel。
+- workspace primitives 可路由到 client worker：`list_dir`、`read_file`、`write_file`、`run_command`、`apply_patch`。
+- server-side backends 看到的仍是统一工具事件，不关心工具实际在 Mac 还是服务器执行。
+- `hybrid` mode 下非 workspace 服务能力可留在服务器，workspace 副作用必须走 client worker。
+- 断连、超时、权限拒绝、用户取消都有清晰事件和错误。
+- audit 只保存必要事件、metadata 和摘要，不保存大文件内容或构建产物。
+
+#### TODO
+- [x] 在任务板登记 T021。
+- [x] 预留本地 worker endpoint/token/capability 配置；已由 T025 的 `workers` 最终模型替换。
+- [x] 在 `docs/deployment.md` 说明 Mac + Ubuntu 长期推荐拓扑。
+- [x] 设计 `docs/client-worker.md`，明确 client worker 协议、权限模型和事件流。
+- [ ] 新增 server-side tool router 抽象，但先不改变 backend adapter 事件语义。
+- [ ] 新增 Mac 本地 worker 最小实现，支持 `list_dir` / `read_file` / `run_command` dry-run smoke。
+- [ ] 打通 `client` mode：服务器将 workspace tool-call 转发给本地 worker。
+- [ ] 打通 `hybrid` mode：workspace tools 走 client worker，其它服务能力可留 server。
+- [ ] 增加端到端 smoke：Ubuntu-like service + local worker + temp workspace。
+
+#### 异常发现
+- “服务器不记录执行垃圾文件”不等于服务器完全无状态；run audit、proposal、capability、错误事件仍应保留在服务器，方便调试和治理。
+- 真正要避免的是 workspace 副作用落到服务器：文件写入、shell 输出产物、构建缓存、临时 patch、中间依赖目录。
+
+#### Takeaway
+- 长期方案应是 control plane 在服务器，workspace data plane 在用户端。这样既能托管统一 AgentServer service，又不会把用户项目和执行垃圾搬到云服务器。
+
+### T025
+
+#### 目标说明
+- 将旧 `workspace profile / tool placement / route destination` 模型彻底替换为最终四元模型：`backend / workspace / worker / route`。
+- backend 固定作为服务端大脑；workspace 只表示数据归属地；worker 才是执行者。
+- 每个 tool-call 通过 route plan 指定 primary worker 和 fallback workers。
+- 工具产生的数据、artifact、结果默认归 workspace。
+
+#### 成功标准
+- 删除旧 `tool-placement.ts` / `tool-router.ts` 实现。
+- 新增单一 `core/runtime/tool-routing.ts`。
+- 类型模型包含：
+  - `WorkspaceSpec`
+  - `WorkerProfile`
+  - `ToolRoutingPolicy`
+  - `ToolRoutePlan`
+- `planToolRoute()` 支持 primary/fallback workers。
+- workspace 副作用工具要求 worker 可访问同一个 workspace。
+- network 工具可由 backend-server / network worker 代跑。
+- output policy 默认 `writeToWorkspace=true`。
+- 配置层使用 `workspaces / workers / toolRouting`，不再使用 `profiles / toolPlacement / clientWorker`。
+- SDK/root exports 使用新 routing helper。
+- 中文文档以 `backend / workspace / worker / route` 为唯一解释。
+
+#### TODO
+- [x] 在任务板登记 T025。
+- [x] 删除旧 `core/runtime/tool-placement.ts`。
+- [x] 删除旧 `core/runtime/tool-router.ts`。
+- [x] 新增 `core/runtime/tool-routing.ts`。
+- [x] 重写 routing unit tests。
+- [x] 重写 `server/utils/openteam-config.ts` routing 配置模型。
+- [x] 重写 `smoke:tool-routing-config`。
+- [x] 更新 package root / SDK 导出。
+- [x] 更新 `openteam.example.json`。
+- [x] 重写 `docs/client-worker.md`。
+- [x] 更新 `docs/public-api.md` 和 `docs/deployment.md`。
+
+#### 异常发现
+- 旧模型把 workspace 同时当“数据归属”和“执行者”，解释 Mac / SSH GPU / backend proxy 时会绕。
+- 新模型中 `workspace.ownerWorker` 是默认执行者，但单个工具仍可通过 routing policy 选择其它 worker。
+- `fallback` 不能破坏 workspace 一致性：有副作用工具的 fallback worker 必须能访问同一个 workspace root。
+
+#### Takeaway
+- 最终模型应是：backend 负责想，workspace 负责收纳，worker 负责干活，route 负责决定每个 tool-call 谁先干、谁备选。
+
+---
+
+### T026
+
+#### 目标说明
+- 在 T025 route plan 之上新增最小可执行层，让计划不只停留在文档和类型。
+- 当前优先实现两个稳定执行器：`backend-server` 负责 network 工具，`server` 负责服务器可访问 workspace 的文件/shell 工具。
+- `client-worker` / `ssh` / `container` / `remote-service` 在 T026 先保持 plan-only，进入 route plan 但不假装已经能执行；T027 已继续实现 `ssh` executor。
+- network 工具结果在可写 server workspace 中写入 artifact；remote workspace 暂时标记为 pending，等待后续 writeback/remote executor。
+
+#### 成功标准
+- 新增 server-side `executeRoutedToolCall()`。
+- `write_file` / `read_file` / `run_command` 等 workspace 工具能按 route 在 `server` worker 执行。
+- `web_fetch` / `web_search` 等 network 工具能按 route 在 `backend-server` 执行。
+- shared local-tool fallback 在真实 backend run 中通过 routed executor 执行工具。
+- primary worker 若是 plan-only，可 fallback 到可执行 worker。
+- network 结果在 server 可访问 workspace 中写入 artifact。
+- 单元测试覆盖 server 执行、plan-only fallback、network artifact writeback。
+- 新增 smoke 验证最小 executor。
+- 文档说明 route plan 与 routed executor 的边界。
+
+#### TODO
+- [x] 在任务板登记 T026。
+- [x] 新增 `server/runtime/tool-executor.ts`。
+- [x] 复用现有 `local-dev-primitives`，不重复实现工具原语。
+- [x] 支持 `backend-server` / `server` 两类已实现 executor。
+- [x] 对 `client-worker` / `container` / `remote-service` 输出 plan-only skipped attempt；`ssh` 已在 T027 升级为可执行。
+- [x] 支持 primary skipped 后 fallback 到可执行 worker。
+- [x] 对 network 工具写入 workspace artifact。
+- [x] 将 `local-dev-agent` 的工具执行切换到 routed executor。
+- [x] 在没有显式 workspace 配置时自动合成本机 `local-dev` workspace 和 `server-local` worker，保持普通本地开发可用。
+- [x] 新增 `tests/tool-executor.test.ts`。
+- [x] 新增 `scripts/smoke-tool-executor.ts` 和 `npm run smoke:tool-executor`。
+- [x] 更新 `docs/client-worker.md`。
+
+#### 异常发现
+- `backend-server` 可以代跑网络工具，但如果 workspace 在 SSH/GPU/用户端机器上，当前还不能直接把网络结果写回那个远端 workspace。
+- 因此 network 结果写回需要分两层看：server workspace 可立即写 artifact；remote/client workspace 需要后续 remote executor 或 writeback worker。
+
+#### Takeaway
+- 当前系统已经具备“统一计划 + 最小执行”的骨架：本机 server workspace 和 backend 网络代理可以真实运行；跨机器 workspace 下一步应补 executor/writeback，而不是再改核心模型。
+
+---
+
+### T027
+
+#### 目标说明
+- 将最重要的跨机器场景 SSH GPU workspace 从 plan-only 推进到最小可执行。
+- 支持 `ssh` worker 执行 workspace 文件工具和 shell 工具。
+- 支持 `backend-server` 代跑 network 工具后，通过 SSH worker 把 artifact 写回 SSH-owned workspace。
+- 不把 SSH 逻辑塞进 backend harness；它属于 AgentServer worker executor 层。
+
+#### 成功标准
+- `ToolRoutePlan.workers[].executableNow` 对带 `host` 的 `ssh` worker 为 `true`。
+- `WorkerProfile` 支持 `host` / `user` / `port` / `identityFile`。
+- SSH executor 使用系统 `ssh` 命令，通过 `bash -s` 在远端执行脚本。
+- SSH executor 支持：
+  - `read_file`
+  - `write_file`
+  - `append_file`
+  - `list_dir`
+  - `grep_search`
+  - `run_command`
+  - `apply_patch`
+  - `web_fetch`（远端需有 `curl` 或 `wget`）
+- network 工具由 `backend-server` 执行时，如果 workspace owner 是可写 SSH worker，结果 artifact 写回 SSH workspace。
+- 单元测试不依赖真实 SSH 服务，使用 `AGENT_SERVER_SSH_BIN` fake ssh 验证协议。
+- 文档解释 SSH executor 的配置和边界。
+
+#### TODO
+- [x] 在任务板登记 T027。
+- [x] 扩展 `WorkerProfile` SSH 配置字段。
+- [x] 更新 config normalizer，支持 `port` / `user` / `identityFile`。
+- [x] 将带 host 的 `ssh` worker 标记为当前可执行。
+- [x] 在 `tool-executor` 中实现 SSH primitive script 生成和执行。
+- [x] 支持 `AGENT_SERVER_SSH_BIN` 方便测试/部署覆盖。
+- [x] 增加 SSH executor 单元测试。
+- [x] 增加 backend network result 写回 SSH workspace artifact 的测试。
+- [x] 更新 `smoke:tool-executor` 覆盖 SSH route。
+- [x] 更新 `docs/client-worker.md` / `docs/deployment.md` / `docs/public-api.md`。
+
+#### 异常发现
+- SSH executor 需要远端具备基础 shell 工具：`bash`、`mkdir`、`dirname`、`cat`、`patch`；`grep_search` 优先 `rg`，否则 fallback 到 `grep`。
+- 真实 SSH 连接依赖部署环境的 key、known_hosts、网络和权限，单元测试只能验证协议封装，不能替代真实机器 smoke。
+
+#### Takeaway
+- 现在“云端 backend 大脑 + SSH GPU workspace 手 + backend 代联网”已经有代码闭环：文件/shell 在 GPU 侧执行，联网任务可由 backend-server 执行，结果可以写回 GPU workspace artifact。
+
+---
+
+### T028
+
+#### 目标说明
+- 将 Mac/用户端 workspace 场景从 plan-only 推进到最小可执行。
+- 支持 `client-worker` 通过 HTTP endpoint 接收 tool-call 并在用户端 workspace 执行。
+- 保持协议极薄，AgentServer 只要求 `POST /tool-call`，不绑定具体客户端实现语言。
+- 支持 `backend-server` 代跑 network 工具后，通过 client-worker 把 artifact 写回用户端 workspace。
+
+#### 成功标准
+- `ToolRoutePlan.workers[].executableNow` 对带 `endpoint` 的 `client-worker` 为 `true`。
+- `client-worker` executor 使用 HTTP `POST /tool-call`。
+- 请求包含：
+  - `workerId`
+  - `workspace`
+  - `cwd`
+  - `toolName`
+  - `args`
+- 响应使用 `{ ok: boolean, output: string }`。
+- workspace 文件/shell 工具可 route 到 client-worker。
+- network 工具由 `backend-server` 执行时，如果 workspace owner 是可写 client-worker，结果 artifact 写回 client workspace。
+- 单元测试用本地 fake HTTP worker 覆盖 client-worker 执行和 network writeback。
+- `smoke:tool-executor` 覆盖 client-worker route。
+- 文档解释 client-worker HTTP 协议。
+
+#### TODO
+- [x] 在任务板登记 T028。
+- [x] 将带 endpoint 的 `client-worker` 标记为当前可执行。
+- [x] 在 `tool-executor` 中实现 HTTP client-worker executor。
+- [x] 在 network artifact writeback 中支持 client-worker。
+- [x] 新增 client-worker 单元测试。
+- [x] 新增 backend network result 写回 client workspace 的测试。
+- [x] 更新 `smoke:tool-executor` 覆盖 client-worker。
+- [x] 更新 `docs/client-worker.md` / `docs/deployment.md` / `docs/public-api.md`。
+
+#### 异常发现
+- AgentServer 端只定义协议和路由，不应该规定用户端 worker 用 Node、Python 还是其它语言实现。
+- client-worker 必须自己做本地权限控制，例如 allowed roots、命令白名单、用户确认等；AgentServer 只做 route 和 audit，不替代用户端安全边界。
+
+#### Takeaway
+- 现在四种最常用执行位置已经闭环：`backend-server` 代服务端能力，`server` 跑服务器 workspace，`ssh` 跑 GPU workspace，`client-worker` 跑用户端/Mac workspace。
+
+---
+
+### T029
+
+#### 目标说明
+- 将 T028 的 client-worker HTTP 协议从“测试用 fake worker”推进到项目内可直接启动的最小服务。
+- 让用户端/Mac workspace 所在机器可以运行 `npm run client-worker`，作为 AgentServer 的执行 worker。
+- 给 client-worker 加最小 allowed roots 防护，避免服务被误用到非授权目录。
+
+#### 成功标准
+- 新增可复用 `client-worker` service 模块。
+- 新增 `npm run client-worker` 启动入口。
+- 支持环境变量配置：
+  - `AGENT_SERVER_CLIENT_WORKER_ROOTS`
+  - `AGENT_SERVER_CLIENT_WORKER_ROOT`
+  - `AGENT_SERVER_CLIENT_WORKER_HOST`
+  - `AGENT_SERVER_CLIENT_WORKER_PORT`
+- 支持 `GET /health`。
+- 支持 `POST /tool-call`。
+- 拒绝 cwd/workspace root 不在 allowed roots 内的请求。
+- `tests/tool-executor.test.ts` 和 `smoke:tool-executor` 复用正式 client-worker service 模块。
+- 新增 `smoke:client-worker` 验证服务可启动、可执行工具、可拒绝越界目录。
+- 文档说明如何启动 bundled client-worker。
+
+#### TODO
+- [x] 在任务板登记 T029。
+- [x] 新增 `server/runtime/client-worker-service.ts`。
+- [x] 新增 `scripts/client-worker.ts`。
+- [x] 新增 `npm run client-worker`。
+- [x] 新增 `scripts/smoke-client-worker-service.ts`。
+- [x] 新增 `npm run smoke:client-worker`。
+- [x] 将 tool executor 测试改为复用正式 client-worker service。
+- [x] 将 `smoke:tool-executor` 改为复用正式 client-worker service。
+- [x] 更新 `docs/client-worker.md` / `docs/deployment.md` / `docs/public-api.md`。
+
+#### 异常发现
+- client-worker 的权限边界必须主要留在用户端执行服务里；AgentServer 的 routing 校验是控制面保护，不能替代用户端本地安全。
+- 当前最小服务适合本机或受信网络；公网暴露前还需要 token/auth、TLS、审计和用户确认策略。
+
+#### Takeaway
+- Mac/用户端 workspace 场景现在已经不是“需要用户自己实现协议”的状态；本项目自带最小 client-worker，可以直接跑起来做端到端验证。
+
+---
+
+### T030
+
+#### 目标说明
+- 给 bundled client-worker 增加最小鉴权和能力发现，避免本地工具服务裸奔。
+- 让 AgentServer executor 能自动携带 worker 配置里的 token。
+- 保持实现简单：本阶段只做 bearer token / header token，不引入复杂账号体系。
+
+#### 成功标准
+- `WorkerProfile` 支持 `authToken`。
+- config normalizer 支持 `authToken`。
+- AgentServer 调用 client-worker 时发送 `Authorization: Bearer <authToken>`。
+- client-worker 支持：
+  - `GET /health`
+  - `GET /capabilities`
+  - `POST /tool-call`
+- 设置 token 后，`/capabilities` 和 `/tool-call` 要求鉴权。
+- 支持两种 token 传递方式：
+  - `Authorization: Bearer <token>`
+  - `x-agent-server-token: <token>`
+- `smoke:client-worker` 覆盖 health、auth、capabilities、tool-call、allowed-root guard。
+- 文档说明 `AGENT_SERVER_CLIENT_WORKER_TOKEN` 和 worker `authToken`。
+
+#### TODO
+- [x] 在任务板登记 T030。
+- [x] 扩展 `WorkerProfile.authToken`。
+- [x] 更新 config normalizer。
+- [x] 更新 `tool-executor`，调用 client-worker 时发送 bearer token。
+- [x] 更新 `client-worker-service`，加入 token 校验和 `/capabilities`。
+- [x] 更新 `scripts/client-worker.ts`，支持 `AGENT_SERVER_CLIENT_WORKER_TOKEN`。
+- [x] 更新单元测试，让 routed executor 通过 token 调用 client-worker。
+- [x] 更新 `smoke:client-worker` 覆盖鉴权。
+- [x] 更新 `smoke:tool-executor` 覆盖带 token 的 client-worker route。
+- [x] 更新 `openteam.example.json`。
+- [x] 更新 `docs/client-worker.md` / `docs/deployment.md` / `docs/public-api.md`。
+
+#### 异常发现
+- token 鉴权只适合本机或受信网络的最低限度保护；公网部署仍需要 TLS、token 轮换、审计、审批和更细粒度权限。
+- `/health` 保持公开但不返回 allowed roots；`/capabilities` 在启用 token 时需要鉴权，避免泄露本地能力和目录信息。
+
+#### Takeaway
+- bundled client-worker 现在具备最小安全边界：可以启动、发现能力、执行工具、限制目录，并能要求 AgentServer 携带 token。
+
+---
+
+### T031
+
+#### 目标说明
+- 将 worker routing 的关键安全/可用性约束放进 `check:deployment`，让错误配置在启动前暴露。
+- 覆盖真实部署最容易踩坑的地方：client-worker 未配置 token、workspace root 不在 allowedRoots、SSH identityFile 缺失等。
+
+#### 成功标准
+- `check:deployment` 检查 `server` / `ssh` / `client-worker` 的 `allowedRoots`。
+- `check:deployment` 检查 workspace root 是否落在 owner worker 的 `allowedRoots` 内。
+- `check:deployment` 检查 SSH worker：
+  - `host`
+  - `identityFile` 存在性（如果配置了）
+- `check:deployment` 检查 client-worker：
+  - `endpoint`
+  - endpoint 是 http(s)
+  - `authToken`
+- 文档说明新增部署检查范围。
+
+#### TODO
+- [x] 在任务板登记 T031。
+- [x] 更新 `scripts/check-deployment.ts`。
+- [x] 更新 `docs/deployment.md`。
+- [x] 跑完整验证。
+
+#### 异常发现
+- routing 层认为 `ownerWorker` 能访问 workspace，但真实 client-worker/ssh 服务仍会按 `allowedRoots` 拒绝越界路径；部署检查必须提前发现这种配置不一致。
+
+#### Takeaway
+- `check:deployment` 现在不仅检查 backend launcher，也检查 worker data-plane 的基本安全边界。
+
+---
+
+### T032
+
+#### 目标说明
+- 给严格化后的 `check:deployment` 增加端到端配置 smoke，避免部署检查本身只靠人工相信。
+- 用临时配置覆盖完整 worker routing：`server`、`ssh`、`client-worker`、`backend-server`、workspace owner、allowedRoots、identityFile、authToken 和 network fallback。
+- 同时验证一个坏配置：client-worker 缺少 `authToken` 必须失败。
+
+#### 成功标准
+- 新增 `smoke:deployment-workers`。
+- smoke 生成临时 `openteam.json`。
+- smoke 生成临时 `AGENT_SERVER_DATA_DIR`。
+- 正常配置通过 `check:deployment`。
+- 缺少 client-worker `authToken` 的配置必须被 `check:deployment` 拒绝。
+- 文档列出该 smoke。
+
+#### TODO
+- [x] 在任务板登记 T032。
+- [x] 新增 `scripts/smoke-deployment-worker-routing.ts`。
+- [x] 新增 `npm run smoke:deployment-workers`。
+- [x] 更新 `docs/deployment.md`。
+- [x] 更新 `docs/public-api.md`。
+- [x] 跑完整验证。
+
+#### 异常发现
+- 严格的部署检查需要自己的 smoke，否则后续调整配置 schema 时容易误伤真实部署。
+
+#### Takeaway
+- 现在不仅有 worker executor smoke，也有 worker deployment config smoke：执行链和部署链都被覆盖。

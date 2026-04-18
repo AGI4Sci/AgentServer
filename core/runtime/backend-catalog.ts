@@ -134,6 +134,27 @@ export function isBackendType(value: unknown): value is BackendType {
   return typeof value === 'string' && BACKEND_IDS.includes(value as BackendType);
 }
 
+export function listEnabledBackendIds(): readonly BackendType[] {
+  const raw = process.env.AGENT_SERVER_ENABLED_BACKENDS?.trim();
+  if (!raw) {
+    return BACKEND_IDS;
+  }
+  const enabled = raw
+    .split(',')
+    .map((item) => item.trim())
+    .filter(isBackendType);
+  return enabled.length > 0 ? enabled : BACKEND_IDS;
+}
+
+export function isBackendEnabled(backend: BackendType): boolean {
+  return listEnabledBackendIds().includes(backend);
+}
+
+export function listBackendDescriptors(): BackendDescriptor[] {
+  const enabled = new Set(listEnabledBackendIds());
+  return BACKEND_CATALOG.filter((backend) => enabled.has(backend.id)).map((backend) => ({ ...backend }));
+}
+
 export function normalizeBackendType(value: unknown, fallback: BackendType = DEFAULT_BACKEND): BackendType {
   return isBackendType(value) ? value : fallback;
 }

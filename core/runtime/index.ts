@@ -7,6 +7,7 @@
 export * from './types.js';
 export * from './instance.js';
 export * from './message-router.js';
+export * from './tool-routing.js';
 
 // Adapters
 export * from './adapters/index.js';

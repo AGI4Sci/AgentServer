@@ -42,6 +42,13 @@ export interface RuntimeEventBase {
   raw?: unknown;
 }
 
+export interface ToolRouteEventFields {
+  workspaceId?: string;
+  primaryWorker?: string;
+  fallbackWorkers?: string[];
+  routeReason?: string;
+}
+
 export interface RunSessionOptions {
   backend?: SessionClientType;
   agentId: string;
@@ -77,13 +84,13 @@ export type SessionStreamEvent =
       type: 'tool-call';
       toolName: string;
       detail?: string;
-    } & RuntimeEventBase)
+    } & RuntimeEventBase & ToolRouteEventFields)
   | ({
       type: 'tool-result';
       toolName: string;
       detail?: string;
       output?: string;
-    } & RuntimeEventBase)
+    } & RuntimeEventBase & ToolRouteEventFields)
   | ({
       type: 'permission-request';
       requestId: string;

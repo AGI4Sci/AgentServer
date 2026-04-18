@@ -65,6 +65,8 @@ Start here:
 - [Architecture](./docs/architecture.md)
 - [Backend Runtime](./docs/backend-runtime.md)
 - [Agent Server Runtime](./docs/agent-server-runtime.md)
+- [Deployment](./docs/deployment.md)
+- [Client Worker](./docs/client-worker.md)
 - [Tutorial](./docs/tutorial.md)
 - [Project Board](./PROJECT.md)
 
