@@ -70,8 +70,11 @@ request
 1. **AgentServer 持有统一上下文和编排权。**
    backend 是可组合的专家执行器，不是 session/context 的唯一真相源。
 
-2. **完整 agent backend 能力可以被复用。**
-   对 Codex/Claude Code 这类完整 agent backend，AgentServer 不应只把它们当普通 model provider，而应通过 adapter 复用其 agent loop、工具事件、thread/session、approval 和 sandbox 等能力。
+2. **完整 agent backend 能力可以被复用，且状态必须透明。**
+   对 Codex/Claude Code/Gemini 这类完整 agent backend，AgentServer 不应只把它们当普通 model provider，也不应只把它们当 CLI 文本程序调用。正式 agent backend 必须通过结构化 transport 复用其 agent loop、工具事件、thread/session、approval、sandbox 和可查询状态。
+
+3. **官方 backend 代码默认保持可替换。**
+   Codex、Claude Code、Gemini 等 upstream checkout 应被视为会频繁更新的外部源码。AgentServer 的 adapter、bridge、schema mapping、capability policy 默认写在 AgentServer 自己的 runtime/docs/tests 中；除非没有公开 SDK/API/RPC/app-server 能力可用，否则不修改官方源码。确需修改官方源码时，必须在 `docs/upstream-backend-overrides.md` 记录 backend、upstream 版本、修改文件、修改目的和重放步骤，避免每次同步官方版本后重复摸索。
 
 ### 1.3 三层策略边界
 
@@ -302,7 +305,10 @@ agent-backend runtime
   适合 Codex app-server、Claude Code、未来完整 agent backend
 ```
 
-完整 `agent-backend runtime` 有一个硬原则：**在被调用的 stage 内，backend 的原生 agent 能力应尽量完整保留，接近人类直接使用该 agent 的能力边界。**
+完整 `agent-backend runtime` 有两个硬原则：
+
+1. **能力完整性**：在被调用的 stage 内，backend 的原生 agent 能力应尽量完整保留，接近人类直接使用该 agent 的能力边界。
+2. **状态透明性**：正式 agent backend 面向的是 AgentServer 和其它 agent，而不是人类终端用户；因此必须提供结构化事件、可查询状态、可中止 run、可恢复 session 和机器可读的 tool/approval/sandbox/workspace facts。
 
 这意味着 agent-backend adapter 不应把 Codex、Claude Code 这类 backend 降级成 `prompt -> text` 的普通模型调用。adapter 需要保留并桥接 backend 的原生执行面：
 
@@ -314,6 +320,7 @@ agent-backend runtime
 - 文件编辑、patch、shell、测试等代码工作流
 - streaming native events
 - abort / resume / recovery
+- readState / status transparency
 
 AgentServer 做的是统一控制平面，而不是低配替代 backend 的执行平面：
 
@@ -338,7 +345,23 @@ type AgentBackendCapabilities = {
   fileEditing: boolean;
   streamingEvents: boolean;
   resumableSession: boolean;
+  structuredEvents: boolean;
+  readableState: boolean;
+  abortableRun: boolean;
+  statusTransparency: 'full' | 'partial' | 'opaque';
 };
+```
+
+transport 选择原则：
+
+```text
+正式 agent_backend:
+  必须使用结构化、状态透明的 transport。
+  可接受形式包括官方 app-server、SDK、JSON-RPC、stdio RPC、HTTP/WebSocket event stream、本地 runtime API。
+
+CLI transport:
+  只允许作为 bootstrap、debug、fallback 或 compatibility path。
+  CLI-only adapter 除非能通过可靠 bridge 暴露 structured events、readState、approval、tool calls、workspace facts、abort/resume，否则不能标记为完整生产 agent_backend。
 ```
 
 降级路径也必须显式：
@@ -349,12 +372,19 @@ openai-codex direct provider
   nativeLoop: false
   nativeTools: false
   nativeSandbox: false
+  structuredEvents: false
+  readableState: false
+  statusTransparency: opaque
 
 Codex app-server adapter
   kind: agent_backend
   nativeLoop: true
   nativeTools: true
   nativeSandbox: true
+  structuredEvents: true
+  readableState: true
+  abortableRun: true
+  statusTransparency: full
 ```
 
 如果某个 backend 只能提供部分能力，它仍然可以接入，但 orchestrator 必须按真实 capability 路由，audit 也要记录本次 stage 使用的是完整 agent-backend 路径还是降级路径。
@@ -368,6 +398,7 @@ adapter contract 后续应单独沉淀到 `docs/adapter-contract.md`。最小接
 - tool/approval/error 的结构化输出
 - `BackendStageResult` 和 handoff facts
 - capability declaration 与降级语义
+- `readState` / status transparency
 
 native session 作用域采用以下原则：
 
@@ -1273,11 +1304,12 @@ AgentServer Orchestrator
 
 其中：
 
-- Codex app-server adapter 优先复用 Codex app-server / SDK 的完整 agent 能力。
-- Claude Code adapter 优先复用 Claude Code 的完整 agent 能力。
-- `openai-codex` direct provider 可以继续作为轻量/兼容/兜底路径。
+- Codex app-server adapter 优先复用 Codex app-server / SDK 的完整 agent 能力和结构化状态。
+- Claude Code adapter 必须优先寻找结构化 protocol / bridge；CLI 只能作为 bootstrap/fallback，不能作为最终生产边界。
+- Gemini adapter 必须优先选择能提供结构化事件、可查询状态和长上下文能力的 SDK/API/app-server；CLI 只能作为过渡。
+- `openai-codex` direct provider 可以继续作为轻量/兼容/兜底路径，但不能标记为完整 agent backend。
 - 完整 agent-backend stage 内应保留 native loop、native tools、approval、sandbox、streaming events 和 resumable session；AgentServer 只做桥接、审计和外层控制。
-- 如果 adapter 无法保留这些能力，必须在 capability 中显式标记为部分能力或降级路径，不能伪装成完整 agent backend。
+- 如果 adapter 无法保留这些能力或无法提供状态透明性，必须在 capability 中显式标记为部分能力或降级路径，不能伪装成完整 agent backend。
 - 跨 backend 的 stage 拆分、handoff、验证和最终汇总仍然归 AgentServer。
 - 同一个 AgentServer session 中，Codex/Claude Code adapter 可以复用各自的 native session；但这些 native session 是加速和连续性资源，不是 AgentServer 的上下文真相源。
 
