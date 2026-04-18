@@ -148,6 +148,7 @@ function remotePathScript(rawPath: string): string {
 function buildSshPrimitiveScript(call: LocalDevPrimitiveCall, cwd: string): string {
   const header = [
     'set -euo pipefail',
+    `mkdir -p ${shellQuote(cwd)}`,
     `cd ${shellQuote(cwd)}`,
   ];
 
@@ -267,6 +268,8 @@ function buildSshArgs(worker: WorkerProfile): string[] {
     'BatchMode=yes',
     '-o',
     'ConnectTimeout=10',
+    '-o',
+    'UpdateHostKeys=no',
   ];
   if (worker.port) {
     sshArgs.push('-p', String(worker.port));

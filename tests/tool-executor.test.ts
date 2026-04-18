@@ -191,6 +191,63 @@ test('executeRoutedToolCall executes workspace tools on an ssh worker', async ()
   });
 });
 
+test('executeRoutedToolCall creates a missing ssh workspace root before executing tools', async () => {
+  await withTempWorkspace(async (root) => {
+    const fakeSsh = join(root, 'fake-ssh.sh');
+    await writeFile(fakeSsh, [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      'bash -s',
+      '',
+    ].join('\n'), 'utf-8');
+    await chmod(fakeSsh, 0o755);
+    const previousSshBin = process.env.AGENT_SERVER_SSH_BIN;
+    process.env.AGENT_SERVER_SSH_BIN = fakeSsh;
+    try {
+      const workspaceRoot = join(root, 'missing-ssh-workspace');
+      const workspace: WorkspaceSpec = {
+        id: 'gpu-exp-missing-root',
+        root: workspaceRoot,
+        ownerWorker: 'gpu-a100',
+      };
+      const workers: WorkerProfile[] = [
+        {
+          id: 'backend-server',
+          kind: 'backend-server',
+          capabilities: ['network', 'metadata'],
+        },
+        {
+          id: 'gpu-a100',
+          kind: 'ssh',
+          host: 'gpu.example.com',
+          allowedRoots: [root],
+          capabilities: ['filesystem', 'shell', 'gpu'],
+        },
+      ];
+
+      const result = await executeRoutedToolCall({
+        toolName: 'write_file',
+        toolArgs: {
+          path: 'created.txt',
+          content: 'created missing ssh root',
+        },
+        workspace,
+        workers,
+      });
+
+      assert.equal(result.ok, true);
+      assert.equal(result.workerId, 'gpu-a100');
+      assert.match(await readFile(join(workspaceRoot, 'created.txt'), 'utf-8'), /missing ssh root/);
+    } finally {
+      if (previousSshBin === undefined) {
+        delete process.env.AGENT_SERVER_SSH_BIN;
+      } else {
+        process.env.AGENT_SERVER_SSH_BIN = previousSshBin;
+      }
+    }
+  });
+});
+
 test('executeRoutedToolCall executes workspace tools on a client worker', async () => {
   await withTempWorkspace(async (root) => {
     await withClientWorkerServer(root, async (endpoint, authToken) => {
