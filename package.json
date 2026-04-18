@@ -47,6 +47,7 @@
     "smoke:openteam-agent": "node --import tsx scripts/smoke-openteam-agent-backend.ts",
     "smoke:client-worker": "node --import tsx scripts/smoke-client-worker-service.ts",
     "smoke:deployment-workers": "node --import tsx scripts/smoke-deployment-worker-routing.ts",
+    "smoke:ssh-workers": "node --import tsx scripts/smoke-ssh-workers.ts",
     "smoke:tool-executor": "node --import tsx scripts/smoke-tool-executor.ts",
     "smoke:tool-routing-config": "node --import tsx scripts/smoke-tool-routing-config.ts",
     "smoke:workspace-policy": "node --import tsx scripts/smoke-workspace-policy.ts",

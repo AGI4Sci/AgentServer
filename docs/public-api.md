@@ -259,6 +259,17 @@ Different native backends may internally name or route tools differently. AgentS
 
 Path-oriented primitives resolve relative paths against the agent workspace. `web_search` currently tries DuckDuckGo HTML first and falls back to Bing when the first provider is unreachable.
 
+## Worker Routing Smoke
+
+Projects that use remote workspaces should verify their workers before running real tasks:
+
+```bash
+npm run smoke:tool-executor
+AGENT_SERVER_SSH_SMOKE_HOSTS=pjlab,pjlab_gpu npm run smoke:ssh-workers
+```
+
+`smoke:tool-executor` validates the local routed executor with server, backend-server, SSH, and client-worker routes using controlled test workers. `smoke:ssh-workers` talks to real SSH hosts when configured. It confirms that workspace tools execute on the SSH machine while network tools can still be proxied by `backend-server` and written back to the SSH workspace.
+
 For Mac / cloud backend / SSH GPU layouts, see [Client Worker 与 Tool Routing](./client-worker.md). The short version is: backend is the thinker, workspace owns data/results, workers execute tools, and tool routing chooses primary/fallback workers per tool call.
 
 The SDK exports the route planning helper:

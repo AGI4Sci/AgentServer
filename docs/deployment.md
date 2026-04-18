@@ -97,6 +97,33 @@ Current AgentServer versions implement route planning, configuration parsing, SD
 
 SSH execution uses the system `ssh` command. In production, configure key-based auth and batch mode-friendly hosts; for custom packaging, override the binary with `AGENT_SERVER_SSH_BIN`.
 
+To verify real SSH workers with the same routed executor used by AgentServer:
+
+```bash
+AGENT_SERVER_SSH_SMOKE_HOSTS=pjlab,pjlab_gpu npm run smoke:ssh-workers
+```
+
+For explicit per-worker settings, pass JSON:
+
+```bash
+AGENT_SERVER_SSH_SMOKE_WORKERS='[
+  {
+    "id": "pjlab-cpu",
+    "host": "pjlab",
+    "root": "/tmp",
+    "capabilities": ["filesystem", "shell"]
+  },
+  {
+    "id": "pjlab-gpu",
+    "host": "pjlab_gpu",
+    "root": "/tmp",
+    "capabilities": ["filesystem", "shell", "gpu"]
+  }
+]' npm run smoke:ssh-workers
+```
+
+The smoke runs `run_command`, `write_file`, and `read_file` on each SSH worker, then routes `web_fetch` to `backend-server` and writes the network result back into the SSH workspace artifact directory. If no SSH smoke environment variable is set, the script prints `SKIPPED` and exits successfully.
+
 The client-worker executor calls HTTP `POST /tool-call` on the configured endpoint. The request includes `workspace`, `cwd`, `toolName`, and `args`; the response should be JSON with `{ "ok": boolean, "output": string }`.
 
 Run the bundled minimal client-worker on the machine that owns the workspace:
@@ -175,6 +202,7 @@ Before starting the service:
 ```bash
 npm run check:deployment
 npm run smoke:deployment-workers
+npm run smoke:ssh-workers
 ```
 
 This checks:
@@ -191,6 +219,8 @@ This checks:
 - client-worker `endpoint` and `authToken`
 - workspace root alignment with owner worker `allowedRoots`
 - configured tool routing summary
+
+`smoke:ssh-workers` is optional and only performs real SSH checks when `AGENT_SERVER_SSH_SMOKE_HOSTS` or `AGENT_SERVER_SSH_SMOKE_WORKERS` is set.
 
 To check only selected backends:
 

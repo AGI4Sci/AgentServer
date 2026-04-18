@@ -1,6 +1,6 @@
 # AgentServer - PROJECT.md
 
-最后更新：2026-04-18
+最后更新：2026-04-19
 
 ## 使用约定
 - 本文档作为 AgentServer 工程任务板使用，只保留正在推进或待推进的任务。
@@ -26,6 +26,7 @@
 - `T011`：集成 `openteam_agent` 自研 backend（已完成）：将 AI SDK runtime vendored 到本项目内，实现可独立运行的第 7 个 backend，并接入统一事件和工具桥；最近更新 `2026-04-18`
 - `T012`：Agent SDK 化（已完成）：整理包根 public SDK 入口，提供 createAgentClient / runText / runTask / backend capabilities 等薄接口；最近更新 `2026-04-18`
 - `T025`：最终 Tool Routing 四元模型（已完成）：以 `backend / workspace / worker / route` 作为唯一模型，替换旧 placement/profile 设计；最近更新 `2026-04-18`
+- `T033`：真实 SSH worker smoke 脚本（已完成）：将 CPU/GPU SSH 节点实测固化为可重复的 `smoke:ssh-workers`，覆盖 shell、文件读写和 backend 网络代理写回；最近更新 `2026-04-19`
 
 ---
 
@@ -1019,3 +1020,39 @@
 
 #### Takeaway
 - 现在不仅有 worker executor smoke，也有 worker deployment config smoke：执行链和部署链都被覆盖。
+
+---
+
+### T033
+
+#### 目标说明
+- 将真实 SSH CPU/GPU worker 的手工实测固化为可重复 smoke。
+- 让任意项目或部署环境可以通过环境变量指定 SSH 节点，验证 AgentServer routed executor 是否能在这些节点上执行 workspace 工具。
+- 覆盖“workspace 在 SSH 机器，network 工具由 backend-server 代跑，结果写回 SSH workspace artifact”的关键场景。
+
+#### 成功标准
+- 新增 `npm run smoke:ssh-workers`。
+- 未配置 SSH 节点时脚本跳过并返回成功，不影响普通 CI。
+- 支持 `AGENT_SERVER_SSH_SMOKE_HOSTS=pjlab,pjlab_gpu` 简洁配置。
+- 支持 `AGENT_SERVER_SSH_SMOKE_WORKERS` JSON 配置 `id / host / user / port / identityFile / root / capabilities`。
+- 每个 SSH worker 至少验证：
+  - `run_command`
+  - `write_file`
+  - `read_file`
+  - `web_fetch` 由 `backend-server` 执行并写回 SSH workspace artifact
+- 文档说明脚本用途和用法。
+
+#### TODO
+- [x] 在任务板登记 T033。
+- [x] 新增 `scripts/smoke-ssh-workers.ts`。
+- [x] 新增 `npm run smoke:ssh-workers`。
+- [x] 更新 `docs/deployment.md`。
+- [x] 更新 `docs/public-api.md`。
+- [x] 跑本地跳过验证、真实 pjlab/pjlab_gpu 验证和完整测试。
+
+#### 异常发现
+- pjlab 跳板环境存在短时间并发 SSH 连接偶发 reset；真实 smoke 应串行执行 worker，避免把网关抖动误判成执行层错误。
+- 当前实测中 CPU/GPU 节点 DNS 可解析，但公共出站 HTTP 请求超时；因此网络工具代理应优先放在 `backend-server` 或其它有网 worker。
+
+#### Takeaway
+- 真实节点验证现在不是一次性手工结论，而是可以随着 SSH 配置、workspace root 和 worker routing 变化重复运行的工程检查。
