@@ -9,9 +9,11 @@
     "dev": "tsx watch server/index.ts",
     "dev:8080": "PORT=8080 npm run dev",
     "build": "tsc",
+    "build:backend-binaries": "node --import tsx scripts/build-openteam-backends.ts",
     "start": "node dist/server/index.js",
     "runtime-supervisor": "node --import tsx server/runtime-supervisor/index.ts",
     "smoke:agent-server": "node --import tsx scripts/smoke-agent-server.ts",
+    "smoke:agent-server:backends": "node --import tsx scripts/smoke-agent-server-backends.ts",
     "test": "node --import tsx --test tests/*.test.ts"
   },
   "dependencies": {

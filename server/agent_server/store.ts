@@ -7,6 +7,7 @@ import type {
   AgentCompactionIntentRecord,
   AgentCompactionTagRecord,
   AgentConstraintRecord,
+  AgentEvolutionProposal,
   AgentManifest,
   AgentGoalRecord,
   AgentRecoveryStatus,
@@ -18,6 +19,7 @@ import type {
 } from './types.js';
 import {
   AGENT_SERVER_AGENTS_DIR,
+  AGENT_SERVER_EVOLUTION_PROPOSALS_DIR,
   getAgentClarificationPath,
   getAgentClarificationsDir,
   getAgentDir,
@@ -26,6 +28,7 @@ import {
   getAgentMemoryConstraintsPath,
   getAgentMemorySummaryPath,
   getAgentQueuePath,
+  getEvolutionProposalPath,
   getAgentSessionsDir,
   getSessionCurrentPath,
   getSessionPersistentConstraintsPath,
@@ -174,6 +177,7 @@ function dedupeConstraints(items: AgentConstraintRecord[]): AgentConstraintRecor
 export class AgentStore {
   async ensureDataRoot(): Promise<void> {
     await ensureDir(AGENT_SERVER_AGENTS_DIR);
+    await ensureDir(AGENT_SERVER_EVOLUTION_PROPOSALS_DIR);
   }
 
   async listAgents(): Promise<AgentManifest[]> {
@@ -193,6 +197,27 @@ export class AgentStore {
 
   async saveAgent(manifest: AgentManifest): Promise<void> {
     await writeJson(getAgentManifestPath(manifest.id), manifest);
+  }
+
+  async saveEvolutionProposal(proposal: AgentEvolutionProposal): Promise<void> {
+    await writeJson(getEvolutionProposalPath(proposal.id), proposal);
+  }
+
+  async getEvolutionProposal(proposalId: string): Promise<AgentEvolutionProposal | null> {
+    return await readJsonFile<AgentEvolutionProposal>(getEvolutionProposalPath(proposalId));
+  }
+
+  async listEvolutionProposals(): Promise<AgentEvolutionProposal[]> {
+    await ensureDir(AGENT_SERVER_EVOLUTION_PROPOSALS_DIR);
+    const entries = await readdir(AGENT_SERVER_EVOLUTION_PROPOSALS_DIR, { withFileTypes: true });
+    const proposals = await Promise.all(
+      entries
+        .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+        .map((entry) => this.getEvolutionProposal(entry.name.replace(/\.json$/, ''))),
+    );
+    return proposals
+      .filter((item): item is AgentEvolutionProposal => Boolean(item))
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   }
 
   async saveClarification(record: AgentClarificationRecord): Promise<void> {
@@ -409,6 +434,18 @@ export class AgentStore {
   async saveRun(run: AgentRunRecord): Promise<void> {
     const runPath = join(getSessionRunsDir(run.agentId, run.sessionId), `${run.id}.json`);
     await writeJson(runPath, run);
+  }
+
+  async getRun(runId: string): Promise<AgentRunRecord | null> {
+    const agents = await this.listAgents();
+    for (const agent of agents) {
+      const runs = await this.listRuns(agent.id);
+      const run = runs.find((item) => item.id === runId);
+      if (run) {
+        return run;
+      }
+    }
+    return null;
   }
 
   async listRuns(agentId: string, sessionId?: string): Promise<AgentRunRecord[]> {

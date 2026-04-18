@@ -18,14 +18,17 @@ import type {
   AgentWorkspaceSearchRequest,
   AcknowledgeRecoveryRequest,
   ApplyPersistentBudgetRequest,
+  AgentServerRunRequest,
   AppendMemoryConstraintsRequest,
   AppendMemorySummaryRequest,
   AppendPersistentConstraintsRequest,
   AppendPersistentSummaryRequest,
   AutonomousAgentRunRequest,
+  CreateAgentEvolutionProposalRequest,
   ReplaceCurrentWorkRequest,
   ReviveAgentRequest,
   EnsureAutonomousAgentRequest,
+  UpdateAgentEvolutionProposalStatusRequest,
 } from '../agent_server/types.js';
 import { getAgentServerClient } from '../agent_server/client.js';
 import { getAgentServerLoopManager } from '../agent_server/runtime.js';
@@ -64,6 +67,54 @@ export async function handleAgentServerRoutes(
   const parsedUrl = new URL(url, 'http://127.0.0.1');
 
   try {
+    if (pathname === '/api/agent-server/runs' && method === 'POST') {
+      const body = await readJsonBody<AgentServerRunRequest>(req);
+      const result = await service.runTask(body);
+      if (result.agent.autonomy.enabled && result.agent.status === 'active') {
+        loopManager.ensureLoop(result.agent.id, 250);
+      }
+      sendJson(res, 200, success(result));
+      return true;
+    }
+
+    const runMatch = pathname.match(/^\/api\/agent-server\/runs\/([^/]+)$/);
+    if (runMatch && method === 'GET') {
+      sendJson(res, 200, success(await service.getRun(runMatch[1])));
+      return true;
+    }
+
+    if (pathname === '/api/agent-server/evolution/proposals' && method === 'GET') {
+      sendJson(res, 200, success(await service.listEvolutionProposals()));
+      return true;
+    }
+
+    if (pathname === '/api/agent-server/evolution/proposals' && method === 'POST') {
+      const body = await readJsonBody<CreateAgentEvolutionProposalRequest>(req);
+      sendJson(res, 200, success(await service.createEvolutionProposal(body)));
+      return true;
+    }
+
+    const proposalMatch = pathname.match(/^\/api\/agent-server\/evolution\/proposals\/([^/]+)$/);
+    if (proposalMatch && method === 'GET') {
+      sendJson(res, 200, success(await service.getEvolutionProposal(proposalMatch[1])));
+      return true;
+    }
+
+    const proposalTransitionMatch = pathname.match(/^\/api\/agent-server\/evolution\/proposals\/([^/]+)\/(approve|reject|apply|rollback)$/);
+    if (proposalTransitionMatch && method === 'POST') {
+      const body = await readJsonBody<UpdateAgentEvolutionProposalStatusRequest>(req);
+      const [, proposalId, action] = proposalTransitionMatch;
+      const proposal = action === 'approve'
+        ? await service.approveEvolutionProposal(proposalId, body)
+        : action === 'reject'
+          ? await service.rejectEvolutionProposal(proposalId, body)
+          : action === 'apply'
+            ? await service.applyEvolutionProposal(proposalId, body)
+            : await service.rollbackEvolutionProposal(proposalId, body);
+      sendJson(res, 200, success(proposal));
+      return true;
+    }
+
     if (pathname === '/api/agent-server/autonomous/ensure' && method === 'POST') {
       const body = await readJsonBody<EnsureAutonomousAgentRequest>(req);
       const agent = await service.ensureAutonomousAgent(body);

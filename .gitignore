@@ -10,6 +10,7 @@ server/backend/**/openteam-local/
 
 # Backend build artifacts and dependency caches
 server/backend/**/node_modules/
+server/backend/bin/
 server/backend/**/dist/
 server/backend/**/build/
 server/backend/**/target/

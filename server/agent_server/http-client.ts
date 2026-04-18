@@ -5,6 +5,7 @@ import type {
   AgentConstraintRecord,
   AgentContextSnapshot,
   AgentCurrentWorkRequest,
+  AgentEvolutionProposal,
   AgentGoalRecord,
   AgentGoalRequest,
   AgentManifest,
@@ -13,6 +14,8 @@ import type {
   AgentRetrievalRequest,
   AgentRetrievalResult,
   AgentRunRecord,
+  AgentServerRunRequest,
+  AgentServerRunResult,
   AgentTurnLogQuery,
   AgentTurnRecord,
   AgentWorkEntry,
@@ -27,6 +30,7 @@ import type {
   AutonomousAgentRunResult,
   CompactAgentRequest,
   CompactPreviewResult,
+  CreateAgentEvolutionProposalRequest,
   CreateAgentRequest,
   EnsureAutonomousAgentRequest,
   FinalizeSessionPreview,
@@ -35,9 +39,19 @@ import type {
   ReplaceCurrentWorkRequest,
   ResolveClarificationRequest,
   ReviveAgentRequest,
+  UpdateAgentEvolutionProposalStatusRequest,
 } from './types.js';
 
 export interface AgentServerHttpClient {
+  runTask(input: AgentServerRunRequest): Promise<AgentServerRunResult>;
+  getRun(runId: string): Promise<AgentRunRecord>;
+  createEvolutionProposal(input: CreateAgentEvolutionProposalRequest): Promise<AgentEvolutionProposal>;
+  listEvolutionProposals(): Promise<AgentEvolutionProposal[]>;
+  getEvolutionProposal(proposalId: string): Promise<AgentEvolutionProposal>;
+  approveEvolutionProposal(proposalId: string, input?: UpdateAgentEvolutionProposalStatusRequest): Promise<AgentEvolutionProposal>;
+  rejectEvolutionProposal(proposalId: string, input?: UpdateAgentEvolutionProposalStatusRequest): Promise<AgentEvolutionProposal>;
+  applyEvolutionProposal(proposalId: string, input?: UpdateAgentEvolutionProposalStatusRequest): Promise<AgentEvolutionProposal>;
+  rollbackEvolutionProposal(proposalId: string, input?: UpdateAgentEvolutionProposalStatusRequest): Promise<AgentEvolutionProposal>;
   ensureAutonomousAgent(input: EnsureAutonomousAgentRequest): Promise<AgentManifest>;
   runAutonomousTask(input: AutonomousAgentRunRequest): Promise<AutonomousAgentRunResult>;
   createAgent(input: CreateAgentRequest): Promise<AgentManifest>;
@@ -104,6 +118,33 @@ export function createAgentServerHttpClient(baseUrl: string): AgentServerHttpCli
   }
 
   return {
+    runTask(input) {
+      return postJson('/api/agent-server/runs', input);
+    },
+    getRun(runId) {
+      return request(`/api/agent-server/runs/${runId}`);
+    },
+    createEvolutionProposal(input) {
+      return postJson('/api/agent-server/evolution/proposals', input);
+    },
+    listEvolutionProposals() {
+      return request('/api/agent-server/evolution/proposals');
+    },
+    getEvolutionProposal(proposalId) {
+      return request(`/api/agent-server/evolution/proposals/${proposalId}`);
+    },
+    approveEvolutionProposal(proposalId, input = {}) {
+      return postJson(`/api/agent-server/evolution/proposals/${proposalId}/approve`, input);
+    },
+    rejectEvolutionProposal(proposalId, input = {}) {
+      return postJson(`/api/agent-server/evolution/proposals/${proposalId}/reject`, input);
+    },
+    applyEvolutionProposal(proposalId, input = {}) {
+      return postJson(`/api/agent-server/evolution/proposals/${proposalId}/apply`, input);
+    },
+    rollbackEvolutionProposal(proposalId, input = {}) {
+      return postJson(`/api/agent-server/evolution/proposals/${proposalId}/rollback`, input);
+    },
     ensureAutonomousAgent(input) {
       return postJson('/api/agent-server/autonomous/ensure', input);
     },

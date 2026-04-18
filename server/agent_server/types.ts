@@ -55,6 +55,7 @@ export interface AgentManifest {
   autonomy: AgentAutonomyConfig;
   runtime: AgentRuntimeState;
   activeSessionId: string;
+  metadata?: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
 }
@@ -104,8 +105,94 @@ export interface AgentRunRecord {
   };
   output: SessionOutput;
   events: SessionStreamEvent[];
+  contextRefs?: AgentContextRef[];
+  metrics?: AgentRunMetrics;
+  evaluation?: AgentRunEvaluation;
+  metadata?: Record<string, unknown>;
   createdAt: string;
   completedAt: string;
+}
+
+export interface AgentContextRef {
+  scope: 'memory' | 'state' | 'work' | 'policy' | 'runtime';
+  kind: string;
+  id?: string;
+  label?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface AgentRunMetrics {
+  durationMs: number;
+  toolCallCount: number;
+  approxContextTokens: number;
+  backend: BackendType;
+  usage?: SessionOutput['usage'];
+}
+
+export interface AgentRunEvaluation {
+  outcome: 'success' | 'partial' | 'failed' | 'blocked' | 'unknown';
+  score?: number;
+  reasons: string[];
+  evaluator?: string;
+}
+
+export type AgentEvolutionProposalType =
+  | 'context-weight-change'
+  | 'context-merge'
+  | 'context-policy-experiment'
+  | 'backend-routing-experiment'
+  | 'directive-change';
+
+export type AgentEvolutionProposalRisk = 'low' | 'medium' | 'high';
+
+export type AgentEvolutionProposalStatus =
+  | 'draft'
+  | 'proposed'
+  | 'approved'
+  | 'rejected'
+  | 'applied'
+  | 'rolled_back';
+
+export interface AgentEvolutionProposalHistoryEntry {
+  status: AgentEvolutionProposalStatus;
+  note?: string;
+  actor?: string;
+  createdAt: string;
+}
+
+export interface AgentEvolutionProposal {
+  id: string;
+  type: AgentEvolutionProposalType;
+  title: string;
+  evidence: unknown[];
+  expectedImpact?: string;
+  risk: AgentEvolutionProposalRisk;
+  rollbackPlan: string;
+  status: AgentEvolutionProposalStatus;
+  metadata?: Record<string, unknown>;
+  history: AgentEvolutionProposalHistoryEntry[];
+  createdAt: string;
+  updatedAt: string;
+  appliedAt?: string;
+  rolledBackAt?: string;
+}
+
+export interface CreateAgentEvolutionProposalRequest {
+  type: AgentEvolutionProposalType;
+  title: string;
+  evidence?: unknown[];
+  expectedImpact?: string;
+  risk: AgentEvolutionProposalRisk;
+  rollbackPlan: string;
+  status?: Extract<AgentEvolutionProposalStatus, 'draft' | 'proposed'>;
+  metadata?: Record<string, unknown>;
+  actor?: string;
+  note?: string;
+}
+
+export interface UpdateAgentEvolutionProposalStatusRequest {
+  note?: string;
+  actor?: string;
 }
 
 export interface AgentTurnRecord {
@@ -543,6 +630,7 @@ export interface CreateAgentRequest {
   initialMemorySummary?: string;
   autonomy?: Partial<AgentAutonomyConfig>;
   initialGoal?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface AutonomousAgentPolicy {
@@ -571,6 +659,7 @@ export interface AgentMessageRequest {
   message: string;
   localDevPolicy?: LocalDevPolicyHint;
   contextPolicy?: AgentMessageContextPolicy;
+  metadata?: Record<string, unknown>;
 }
 
 export interface AgentMessageContextPolicy {
@@ -608,6 +697,42 @@ export interface AutonomousAgentRunResult {
   run: AgentRunRecord;
   recoveryActions: AutonomousAgentRecoveryAction[];
   retried: boolean;
+}
+
+export interface AgentServerRunRequest {
+  agent: {
+    id?: string;
+    name?: string;
+    backend?: BackendType;
+    workspace?: string;
+    workingDirectory?: string;
+    systemPrompt?: string;
+    runtimeTeamId?: string;
+    runtimeAgentId?: string;
+    initialMemorySummary?: string;
+    autonomy?: Partial<AgentAutonomyConfig>;
+    reconcileExisting?: boolean;
+    policy?: AutonomousAgentPolicy;
+    metadata?: Record<string, unknown>;
+  };
+  input: {
+    text: string;
+    attachments?: unknown[];
+    metadata?: Record<string, unknown>;
+  };
+  contextPolicy?: AgentMessageContextPolicy;
+  runtime?: {
+    backend?: BackendType;
+    cwd?: string;
+    localDevPolicy?: LocalDevPolicyHint;
+    metadata?: Record<string, unknown>;
+  };
+  policy?: AutonomousAgentPolicy;
+  metadata?: Record<string, unknown>;
+}
+
+export interface AgentServerRunResult extends AutonomousAgentRunResult {
+  metadata?: Record<string, unknown>;
 }
 
 export interface AgentGoalRecord {

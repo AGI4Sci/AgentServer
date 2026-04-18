@@ -17,10 +17,12 @@ import type {
   AgentClarificationRecord,
   AgentCompactionIntentRecord,
   AgentContextSnapshot,
+  AgentContextRef,
   AgentCompactionTagRecord,
   AgentConstraintRecord,
   ConstraintDurability,
   ConstraintPriority,
+  AgentEvolutionProposal,
   AgentGoalRecord,
   AgentGoalRequest,
   AgentOperationalGuidance,
@@ -28,6 +30,8 @@ import type {
   AgentManifest,
   AgentMessageContextPolicy,
   AgentMessageRequest,
+  AgentServerRunRequest,
+  AgentServerRunResult,
   AgentRunStreamOptions,
   AgentRecoveryIssueRecord,
   AgentRetrievalHit,
@@ -68,6 +72,7 @@ import type {
   AgentWorkspaceSearchResult,
   ClearMemoryRequest,
   CompactAgentRequest,
+  CreateAgentEvolutionProposalRequest,
   CreateAgentRequest,
   CreateSessionRequest,
   FinalizeSessionCandidate,
@@ -81,6 +86,7 @@ import type {
   ResolveClarificationRequest,
   ReviveAgentRequest,
   ResetPersistentRequest,
+  UpdateAgentEvolutionProposalStatusRequest,
 } from './types.js';
 
 const DEFAULT_RUNTIME_TEAM_ID = 'agent-server';
@@ -578,7 +584,16 @@ export class AgentServerService {
   private initializationPromise: Promise<void> | null = null;
   private readonly agentOperationChains = new Map<string, Promise<void>>();
 
-  constructor(private readonly store = new AgentStore()) {}
+  constructor(
+    private readonly store = new AgentStore(),
+    private readonly options: {
+      evaluateRun?: (input: {
+        run: AgentRunRecord;
+        contextSnapshot: AgentContextSnapshot;
+        output: SessionOutput;
+      }) => Promise<AgentRunRecord['evaluation'] | null> | AgentRunRecord['evaluation'] | null;
+    } = {},
+  ) {}
 
   private async ensureInitialized(): Promise<void> {
     if (this.initialized) {
@@ -687,6 +702,7 @@ export class AgentServerService {
         consecutiveErrors: 0,
       },
       activeSessionId: session.id,
+      metadata: input.metadata,
       createdAt: now,
       updatedAt: now,
     };
@@ -735,6 +751,147 @@ export class AgentServerService {
       recoveryActions,
       retried,
     };
+  }
+
+  async runTask(
+    request: AgentServerRunRequest,
+    stream?: AgentRunStreamOptions,
+  ): Promise<AgentServerRunResult> {
+    const text = String(request.input?.text || '').trim();
+    if (!text) {
+      throw new Error('input.text is required');
+    }
+    const workingDirectory = String(
+      request.agent?.workingDirectory
+        || request.agent?.workspace
+        || request.runtime?.cwd
+        || '',
+    ).trim();
+    if (!workingDirectory) {
+      throw new Error('agent.workspace or agent.workingDirectory is required');
+    }
+
+    const metadata = {
+      ...(request.metadata ?? {}),
+      ...(request.input?.metadata ? { input: request.input.metadata } : {}),
+      ...(request.runtime?.metadata ? { runtime: request.runtime.metadata } : {}),
+      ...(request.agent?.metadata ? { agent: request.agent.metadata } : {}),
+    };
+    const result = await this.runAutonomousTask({
+      agent: {
+        id: request.agent?.id,
+        name: request.agent?.name,
+        backend: request.runtime?.backend ?? request.agent?.backend,
+        workingDirectory,
+        runtimeTeamId: request.agent?.runtimeTeamId,
+        runtimeAgentId: request.agent?.runtimeAgentId,
+        systemPrompt: request.agent?.systemPrompt,
+        initialMemorySummary: request.agent?.initialMemorySummary,
+        autonomy: request.agent?.autonomy,
+        reconcileExisting: request.agent?.reconcileExisting,
+        policy: request.agent?.policy,
+        metadata: request.agent?.metadata,
+      },
+      message: {
+        message: text,
+        localDevPolicy: request.runtime?.localDevPolicy,
+        contextPolicy: request.contextPolicy,
+        metadata,
+      },
+      policy: request.policy ?? request.agent?.policy,
+    }, stream);
+
+    return {
+      ...result,
+      metadata,
+    };
+  }
+
+  async createEvolutionProposal(request: CreateAgentEvolutionProposalRequest): Promise<AgentEvolutionProposal> {
+    await this.ensureInitialized();
+    const title = String(request.title || '').trim();
+    if (!title) {
+      throw new Error('proposal title is required');
+    }
+    const rollbackPlan = String(request.rollbackPlan || '').trim();
+    if (!rollbackPlan) {
+      throw new Error('proposal rollbackPlan is required');
+    }
+    const now = nowIso();
+    const status = request.status === 'draft' ? 'draft' : 'proposed';
+    const proposal: AgentEvolutionProposal = {
+      id: `proposal-${Date.now().toString(36)}-${randomUUID().slice(0, 6)}`,
+      type: request.type,
+      title,
+      evidence: request.evidence ?? [],
+      expectedImpact: request.expectedImpact,
+      risk: request.risk,
+      rollbackPlan,
+      status,
+      metadata: request.metadata,
+      history: [
+        {
+          status,
+          actor: request.actor,
+          note: request.note,
+          createdAt: now,
+        },
+      ],
+      createdAt: now,
+      updatedAt: now,
+    };
+    await this.store.saveEvolutionProposal(proposal);
+    return proposal;
+  }
+
+  async listEvolutionProposals(): Promise<AgentEvolutionProposal[]> {
+    await this.ensureInitialized();
+    return await this.store.listEvolutionProposals();
+  }
+
+  async getEvolutionProposal(proposalId: string): Promise<AgentEvolutionProposal> {
+    await this.ensureInitialized();
+    const proposal = await this.store.getEvolutionProposal(String(proposalId || '').trim());
+    if (!proposal) {
+      throw new Error(`Evolution proposal not found: ${proposalId}`);
+    }
+    return proposal;
+  }
+
+  async approveEvolutionProposal(
+    proposalId: string,
+    request: UpdateAgentEvolutionProposalStatusRequest = {},
+  ): Promise<AgentEvolutionProposal> {
+    return await this.transitionEvolutionProposal(proposalId, 'approved', request);
+  }
+
+  async rejectEvolutionProposal(
+    proposalId: string,
+    request: UpdateAgentEvolutionProposalStatusRequest = {},
+  ): Promise<AgentEvolutionProposal> {
+    return await this.transitionEvolutionProposal(proposalId, 'rejected', request);
+  }
+
+  async applyEvolutionProposal(
+    proposalId: string,
+    request: UpdateAgentEvolutionProposalStatusRequest = {},
+  ): Promise<AgentEvolutionProposal> {
+    const proposal = await this.getEvolutionProposal(proposalId);
+    if (proposal.status !== 'approved') {
+      throw new Error('evolution proposal must be approved before apply');
+    }
+    return await this.transitionEvolutionProposal(proposalId, 'applied', request);
+  }
+
+  async rollbackEvolutionProposal(
+    proposalId: string,
+    request: UpdateAgentEvolutionProposalStatusRequest = {},
+  ): Promise<AgentEvolutionProposal> {
+    const proposal = await this.getEvolutionProposal(proposalId);
+    if (proposal.status !== 'applied') {
+      throw new Error('only applied evolution proposals can be rolled back');
+    }
+    return await this.transitionEvolutionProposal(proposalId, 'rolled_back', request);
   }
 
   async startNewSession(agentId: string, request: CreateSessionRequest = {}): Promise<AgentSessionRecord> {
@@ -1483,6 +1640,18 @@ export class AgentServerService {
   async listRuns(agentId: string): Promise<AgentRunRecord[]> {
     await this.getAgent(agentId);
     return await this.store.listRuns(agentId);
+  }
+
+  async getRun(runId: string): Promise<AgentRunRecord> {
+    const normalizedRunId = String(runId || '').trim();
+    if (!normalizedRunId) {
+      throw new Error('runId is required');
+    }
+    const run = await this.store.getRun(normalizedRunId);
+    if (!run) {
+      throw new Error(`Run not found: ${normalizedRunId}`);
+    }
+    return run;
   }
 
   async getCurrentWork(agentId: string, request: AgentCurrentWorkRequest = {}): Promise<AgentWorkEntry[]> {
@@ -2397,6 +2566,7 @@ export class AgentServerService {
       message,
       contextPolicy,
     );
+    const contextRefs = this.buildRunContextRefs(contextSnapshot, contextPolicy);
     const userTurn = {
       kind: 'turn' as const,
       turnId: `turn-${randomUUID()}`,
@@ -2407,6 +2577,7 @@ export class AgentServerService {
       turnNumber: nextTurnNumber,
     };
     await this.store.appendTurn(agent.id, session.id, userTurn);
+    const runStartedAtMs = Date.now();
 
     const events: SessionStreamEvent[] = [];
     const emitEvent = (event: SessionStreamEvent): void => {
@@ -2475,6 +2646,56 @@ export class AgentServerService {
     session.updatedAt = agent.updatedAt;
     await this.store.saveSession(session);
 
+    const basicEvaluation: AgentRunRecord['evaluation'] = {
+      outcome: output.success ? 'success' : 'failed',
+      reasons: output.success ? ['backend returned a successful result'] : [assistantContent || 'backend returned an error'],
+      evaluator: 'agent-server-basic',
+    };
+    let evaluation = basicEvaluation;
+    if (this.options.evaluateRun) {
+      try {
+        const evaluated = await this.options.evaluateRun({
+          run: {
+            id: runId,
+            agentId: agent.id,
+            sessionId: session.id,
+            status: output.success ? 'completed' : 'failed',
+            request: {
+              message,
+              context: executionContext,
+            },
+            output,
+            events,
+            contextRefs,
+            metrics: {
+              durationMs: Math.max(0, Date.now() - runStartedAtMs),
+              toolCallCount: events.filter((event) => event.type === 'tool-call').length,
+              approxContextTokens: approxTokens(executionContext),
+              backend: agent.backend,
+              usage: output.usage,
+            },
+            evaluation: basicEvaluation,
+            metadata: request.metadata,
+            createdAt: userTurn.createdAt,
+            completedAt: assistantTurn.createdAt,
+          },
+          contextSnapshot,
+          output,
+        });
+        if (evaluated) {
+          evaluation = evaluated;
+        }
+      } catch (error) {
+        evaluation = {
+          ...basicEvaluation,
+          reasons: [
+            ...basicEvaluation.reasons,
+            `evaluation hook failed: ${error instanceof Error ? error.message : String(error)}`,
+          ],
+        };
+      }
+    }
+
     const run: AgentRunRecord = {
       id: runId,
       agentId: agent.id,
@@ -2486,6 +2707,18 @@ export class AgentServerService {
       },
       output,
       events,
+      contextRefs,
+      metrics: {
+        durationMs: Math.max(0, Date.now() - runStartedAtMs),
+        toolCallCount: events.filter((event) => event.type === 'tool-call').length,
+        approxContextTokens: approxTokens(executionContext),
+        backend: agent.backend,
+        usage: output.usage,
+      },
+      evaluation: {
+        ...evaluation,
+      },
+      metadata: request.metadata,
       createdAt: userTurn.createdAt,
       completedAt: assistantTurn.createdAt,
     };
@@ -2669,6 +2902,89 @@ export class AgentServerService {
     ].join('\n');
   }
 
+  private buildRunContextRefs(
+    snapshot: AgentContextSnapshot,
+    contextPolicy: Required<AgentMessageContextPolicy>,
+  ): AgentContextRef[] {
+    const refs: AgentContextRef[] = [
+      {
+        scope: 'policy',
+        kind: 'context-policy',
+        label: 'message-context-policy',
+        metadata: {
+          includeCurrentWork: contextPolicy.includeCurrentWork,
+          includeRecentTurns: contextPolicy.includeRecentTurns,
+          includePersistent: contextPolicy.includePersistent,
+          includeMemory: contextPolicy.includeMemory,
+          persistRunSummary: contextPolicy.persistRunSummary,
+          persistExtractedConstraints: contextPolicy.persistExtractedConstraints,
+        },
+      },
+      {
+        scope: 'runtime',
+        kind: 'backend',
+        label: snapshot.agent.backend,
+        metadata: {
+          agentId: snapshot.agent.id,
+          sessionId: snapshot.session.id,
+          workingDirectory: snapshot.agent.workingDirectory,
+        },
+      },
+    ];
+    if (contextPolicy.includeMemory) {
+      refs.push(
+        {
+          scope: 'memory',
+          kind: 'summary-layer',
+          label: 'cross-session memory summary',
+          metadata: { count: snapshot.memorySummaryEntries.length },
+        },
+        {
+          scope: 'memory',
+          kind: 'constraint-layer',
+          label: 'cross-session memory constraints',
+          metadata: { count: snapshot.memoryConstraintEntries.length },
+        },
+      );
+    }
+    if (contextPolicy.includePersistent) {
+      refs.push(
+        {
+          scope: 'state',
+          kind: 'summary-layer',
+          label: 'current-session persistent summary',
+          metadata: { count: snapshot.persistentSummaryEntries.length },
+        },
+        {
+          scope: 'state',
+          kind: 'constraint-layer',
+          label: 'current-session persistent constraints',
+          metadata: { count: snapshot.persistentConstraintEntries.length },
+        },
+      );
+    }
+    if (contextPolicy.includeCurrentWork) {
+      refs.push({
+        scope: 'work',
+        kind: 'current-work-layer',
+        label: 'current work',
+        metadata: {
+          count: snapshot.currentWorkEntries.length,
+          layout: snapshot.workLayout.strategy,
+        },
+      });
+    }
+    if (contextPolicy.includeRecentTurns) {
+      refs.push({
+        scope: 'work',
+        kind: 'recent-turns-layer',
+        label: 'recent turns',
+        metadata: { count: snapshot.recentTurns.length },
+      });
+    }
+    return refs;
+  }
+
   private async maybeCompactAfterRun(agentId: string, sessionId: string): Promise<void> {
     const agent = await this.getAgent(agentId);
     const session = await this.store.getSession(agentId, sessionId);
@@ -2728,6 +3044,37 @@ export class AgentServerService {
       detail,
       createdAt: nowIso(),
     };
+  }
+
+  private async transitionEvolutionProposal(
+    proposalId: string,
+    status: AgentEvolutionProposal['status'],
+    request: UpdateAgentEvolutionProposalStatusRequest,
+  ): Promise<AgentEvolutionProposal> {
+    const proposal = await this.getEvolutionProposal(proposalId);
+    if (proposal.status === 'rejected' || proposal.status === 'rolled_back') {
+      throw new Error(`cannot transition proposal from terminal status: ${proposal.status}`);
+    }
+    if (proposal.status === 'applied' && status !== 'rolled_back') {
+      throw new Error('applied proposal can only transition to rolled_back');
+    }
+    const now = nowIso();
+    proposal.status = status;
+    proposal.updatedAt = now;
+    if (status === 'applied') {
+      proposal.appliedAt = now;
+    }
+    if (status === 'rolled_back') {
+      proposal.rolledBackAt = now;
+    }
+    proposal.history.push({
+      status,
+      actor: request.actor,
+      note: request.note,
+      createdAt: now,
+    });
+    await this.store.saveEvolutionProposal(proposal);
+    return proposal;
   }
 
   private async ensureAutonomousAgentInternal(
@@ -2811,6 +3158,10 @@ export class AgentServerService {
     if (JSON.stringify(existing.autonomy) !== JSON.stringify(desiredAutonomy)) {
       existing.autonomy = desiredAutonomy;
       changedFields.push('autonomy');
+    }
+    if (input.metadata !== undefined && JSON.stringify(existing.metadata ?? {}) !== JSON.stringify(input.metadata ?? {})) {
+      existing.metadata = input.metadata;
+      changedFields.push('metadata');
     }
     if (changedFields.length > 0) {
       existing.updatedAt = nowIso();
