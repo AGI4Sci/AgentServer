@@ -2,6 +2,8 @@
 
 This is the thin integration surface for projects that want to use AgentServer without reading the backend runtime internals.
 
+For in-process SDK usage, set `OPENTEAM_CONFIG_PATH` before importing the package if you need a non-default config file.
+
 ## Choose A Backend
 
 Backend ids are stable public inputs for `runTask`.
@@ -9,11 +11,14 @@ Backend ids are stable public inputs for `runTask`.
 ```ts
 import {
   BACKEND_CATALOG,
+  createAgentClient,
   getBackendCapabilities,
-} from './core/runtime/backend-catalog.js';
-import { listSupportedBackends } from './server/runtime/session-runner-registry.js';
+  listSupportedBackends,
+} from '@agi4sci/agent-server';
 
-console.log(listSupportedBackends());
+const agent = createAgentClient();
+console.log(agent.listBackends().map((backend) => backend.id));
+console.log(listSupportedBackends().map((backend) => backend.id));
 // [
 //   'openteam_agent',
 //   'claude-code',
@@ -62,50 +67,85 @@ with the same task input and event handling code.
 
 `openteam_agent` is the self-developed/custom backend seed. It vendors its SDK runtime inside `server/backend/openteam_agent`, so AgentServer can run independently without importing an external SDK checkout. It still emits the same normalized AgentServer events and uses the same canonical tool primitive names.
 
+When AgentServer is consumed as an npm package, local in-process SDK mode includes the bundled `openteam_agent` runtime. Full native backend source trees are intended for the standalone repository/service deployment; package consumers can still route to those backends through HTTP mode against a running AgentServer service.
+
+Package consumers can also use native backends from local SDK mode by providing managed launchers through `OPENTEAM_BACKEND_BIN_DIR`. This keeps the npm package small while still allowing all backend ids to use the same SDK surface when the host environment supplies native launchers.
+
 ## Run A Task In Process
 
 ```ts
-import { AgentServerService } from './server/agent_server/service.js';
+import { createAgentClient } from '@agi4sci/agent-server';
 
-const service = new AgentServerService();
-
-const result = await service.runTask({
-  agent: {
-    id: 'repo-helper',
-    name: 'Repo Helper',
-    backend: 'codex',
-    workspace: '/absolute/path/to/workspace',
-    systemPrompt: 'You are a careful coding agent.',
-    reconcileExisting: true,
-    metadata: {
-      project: 'my-app',
-    },
-  },
-  input: {
-    text: 'List the repository files and summarize the project.',
-    metadata: {
-      taskId: 'task-123',
-    },
-  },
-  runtime: {
-    localDevPolicy: {
-      isSourceTask: true,
-      maxSteps: 6,
-      forceSummaryOnBudgetExhausted: true,
-    },
-    metadata: {
-      endpointId: 'local',
-    },
-  },
+const agent = createAgentClient({
+  defaultBackend: 'codex',
+  defaultWorkspace: '/absolute/path/to/workspace',
+  defaultSystemPrompt: 'You are a careful coding agent.',
   metadata: {
-    requestId: 'request-123',
+    project: 'my-app',
   },
 });
+
+const result = await agent.runTask(
+  'List the repository files and summarize the project.',
+  {
+    agentId: 'repo-helper',
+    name: 'Repo Helper',
+    inputMetadata: { taskId: 'task-123' },
+    onEvent(event) {
+      console.log(event.type);
+    },
+    runtime: {
+      localDevPolicy: {
+        isSourceTask: true,
+        maxSteps: 6,
+        forceSummaryOnBudgetExhausted: true,
+      },
+    },
+    runtimeMetadata: {
+      endpointId: 'local',
+    },
+    metadata: {
+      requestId: 'request-123',
+    },
+  },
+);
 
 console.log(result.run.status);
 console.log(result.run.output);
 console.log(result.run.events);
 ```
+
+## Manage Agent Lifecycle
+
+The SDK also exposes the small lifecycle surface most host projects need:
+
+```ts
+import { createAgentClient } from '@agi4sci/agent-server';
+
+const client = createAgentClient({
+  defaultBackend: 'openteam_agent',
+  defaultWorkspace: '/absolute/path/to/workspace',
+});
+
+const manifest = await client.createAgent({
+  id: 'repo-helper',
+  name: 'Repo Helper',
+  backend: 'openteam_agent',
+  workingDirectory: '/absolute/path/to/workspace',
+  systemPrompt: 'You are a careful coding agent.',
+});
+
+const run = await client.runTask('Inspect README.md and summarize the project.', {
+  agentId: manifest.id,
+});
+
+console.log(await client.getAgent(manifest.id));
+console.log(await client.listAgents());
+console.log(await client.listRuns(manifest.id));
+console.log(await client.getRun(run.run.id));
+```
+
+This keeps application code at the SDK boundary: create an agent, run a task, inspect audit records, and switch backend by changing the backend id.
 
 To switch backend, change only this field:
 
@@ -130,19 +170,18 @@ npm run dev:8080
 Call the public run facade:
 
 ```ts
-import { createAgentServerHttpClient } from './server/agent_server/http-client.js';
+import { createAgentClient } from '@agi4sci/agent-server';
 
-const client = createAgentServerHttpClient('http://127.0.0.1:8080');
+const client = createAgentClient({
+  baseUrl: 'http://127.0.0.1:8080',
+  defaultBackend: 'hermes-agent',
+  defaultWorkspace: '/absolute/path/to/workspace',
+});
 
-const result = await client.runTask({
-  agent: {
-    id: 'repo-helper',
-    backend: 'hermes-agent',
-    workspace: '/absolute/path/to/workspace',
-    reconcileExisting: true,
-  },
-  input: {
-    text: 'Use list_dir on "." and summarize the files.',
+const result = await client.runTask('Use list_dir on "." and summarize the files.', {
+  agentId: 'repo-helper',
+  onEvent(event) {
+    console.log(event.type);
   },
 });
 
@@ -153,9 +192,21 @@ console.log(audit.events);
 Equivalent raw HTTP endpoint:
 
 ```text
+GET  /api/agent-server/agents
+POST /api/agent-server/agents
+GET  /api/agent-server/agents/:agentId
+GET  /api/agent-server/agents/:agentId/runs
 POST /api/agent-server/runs
+POST /api/agent-server/runs/stream
 GET  /api/agent-server/runs/:runId
 ```
+
+`POST /api/agent-server/runs/stream` returns newline-delimited JSON. Event lines have `{ "event": ... }`; the final successful line has `{ "result": ... }`. The SDK handles this automatically when `onEvent` is supplied in HTTP mode.
+
+Runnable SDK examples live in:
+
+- `examples/sdk-local.ts`
+- `examples/sdk-http.ts`
 
 ## Shared Event Contract
 
@@ -223,8 +274,12 @@ Example normalized event sequence:
 The smoke matrix for this contract is:
 
 ```bash
+npm run smoke:agent-sdk:all-backends
 npm run smoke:agent-server:tool-matrix
 ```
+
+`smoke:agent-sdk:all-backends` verifies the external SDK/HTTP streaming surface for every backend id in `listSupportedBackends()`. It requires managed launcher binaries for native backends under `server/backend/bin` or `OPENTEAM_BACKEND_BIN_DIR`; otherwise it fails rather than silently accepting partial backend coverage.
+`smoke:agent-sdk:installed` verifies the npm package install path and also runs every backend by pointing the installed package at the managed launcher directory.
 
 To test only the OpenTeam Agent backend:
 

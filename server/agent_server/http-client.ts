@@ -41,9 +41,19 @@ import type {
   ReviveAgentRequest,
   UpdateAgentEvolutionProposalStatusRequest,
 } from './types.js';
+import type { SessionStreamEvent } from '../runtime/session-types.js';
+
+export type AgentServerRunStreamEnvelope =
+  | { event: SessionStreamEvent; result?: undefined; error?: undefined }
+  | { result: AgentServerRunResult; event?: undefined; error?: undefined }
+  | { error: string; event?: undefined; result?: undefined };
 
 export interface AgentServerHttpClient {
   runTask(input: AgentServerRunRequest): Promise<AgentServerRunResult>;
+  runTaskStream(
+    input: AgentServerRunRequest,
+    handlers: { onEvent: (event: SessionStreamEvent) => void },
+  ): Promise<AgentServerRunResult>;
   getRun(runId: string): Promise<AgentRunRecord>;
   createEvolutionProposal(input: CreateAgentEvolutionProposalRequest): Promise<AgentEvolutionProposal>;
   listEvolutionProposals(): Promise<AgentEvolutionProposal[]>;
@@ -54,6 +64,7 @@ export interface AgentServerHttpClient {
   rollbackEvolutionProposal(proposalId: string, input?: UpdateAgentEvolutionProposalStatusRequest): Promise<AgentEvolutionProposal>;
   ensureAutonomousAgent(input: EnsureAutonomousAgentRequest): Promise<AgentManifest>;
   runAutonomousTask(input: AutonomousAgentRunRequest): Promise<AutonomousAgentRunResult>;
+  listAgents(): Promise<AgentManifest[]>;
   createAgent(input: CreateAgentRequest): Promise<AgentManifest>;
   getAgent(agentId: string): Promise<AgentManifest>;
   listRuns(agentId: string): Promise<AgentRunRecord[]>;
@@ -117,9 +128,82 @@ export function createAgentServerHttpClient(baseUrl: string): AgentServerHttpCli
     });
   }
 
+  async function postJsonStream(
+    path: string,
+    body: unknown,
+    handlers: { onEvent: (event: SessionStreamEvent) => void },
+  ): Promise<AgentServerRunResult> {
+    const response = await fetch(`${normalizedBaseUrl}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body ?? {}),
+    });
+    if (!response.ok || !response.body) {
+      let detail = '';
+      try {
+        detail = await response.text();
+      } catch {
+        detail = '';
+      }
+      throw new Error(detail || `HTTP ${response.status} for ${path}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let result: AgentServerRunResult | null = null;
+    let streamError: string | null = null;
+
+    function consumeLine(rawLine: string): void {
+      const line = rawLine.trim();
+      if (!line) {
+        return;
+      }
+      const envelope = JSON.parse(line) as AgentServerRunStreamEnvelope;
+      if (envelope.event) {
+        handlers.onEvent(envelope.event);
+      }
+      if (envelope.result) {
+        result = envelope.result;
+      }
+      if (envelope.error) {
+        streamError = envelope.error;
+      }
+    }
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      while (true) {
+        const newlineIndex = buffer.indexOf('\n');
+        if (newlineIndex === -1) {
+          break;
+        }
+        consumeLine(buffer.slice(0, newlineIndex));
+        buffer = buffer.slice(newlineIndex + 1);
+      }
+    }
+    buffer += decoder.decode();
+    consumeLine(buffer);
+
+    if (streamError) {
+      throw new Error(streamError);
+    }
+    if (!result) {
+      throw new Error(`HTTP stream ended without a result for ${path}`);
+    }
+    return result;
+  }
+
   return {
     runTask(input) {
       return postJson('/api/agent-server/runs', input);
+    },
+    runTaskStream(input, handlers) {
+      return postJsonStream('/api/agent-server/runs/stream', input, handlers);
     },
     getRun(runId) {
       return request(`/api/agent-server/runs/${runId}`);
@@ -150,6 +234,9 @@ export function createAgentServerHttpClient(baseUrl: string): AgentServerHttpCli
     },
     runAutonomousTask(input) {
       return postJson('/api/agent-server/autonomous/run', input);
+    },
+    listAgents() {
+      return request('/api/agent-server/agents');
     },
     createAgent(input) {
       return postJson('/api/agent-server/agents', input);

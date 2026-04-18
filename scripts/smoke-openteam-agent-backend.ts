@@ -76,6 +76,21 @@ async function getFreePort(): Promise<number> {
   return address.port;
 }
 
+async function stopSupervisor(port: number): Promise<void> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/health`);
+    if (!response.ok) {
+      return;
+    }
+    const health = await response.json() as { pid?: number };
+    if (health.pid && health.pid !== process.pid) {
+      process.kill(health.pid, 'SIGTERM');
+    }
+  } catch {
+    // Best-effort cleanup for detached smoke supervisors.
+  }
+}
+
 const workspace = await mkdtemp(join(tmpdir(), 'openteam-agent-direct-smoke-'));
 const configDir = await mkdtemp(join(tmpdir(), 'openteam-agent-config-'));
 const modelServer = await startModelServer();
@@ -140,6 +155,7 @@ try {
   }
   console.log(`PASSED openteam_agent direct smoke: run=${result.run.id} events=${result.run.events.length}`);
 } finally {
+  await stopSupervisor(supervisorPort);
   await modelServer.close();
   await rm(workspace, { recursive: true, force: true });
   await rm(configDir, { recursive: true, force: true });

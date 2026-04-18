@@ -19,7 +19,7 @@
     "noImplicitReturns": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["core/**/*.ts", "server/**/*.ts", "scripts/**/*.ts"],
+  "include": ["index.ts", "core/**/*.ts", "sdk/**/*.ts", "server/**/*.ts", "scripts/**/*.ts"],
   "exclude": [
     "node_modules",
     "dist",

@@ -32,6 +32,7 @@ import type {
 } from '../agent_server/types.js';
 import { getAgentServerClient } from '../agent_server/client.js';
 import { getAgentServerLoopManager } from '../agent_server/runtime.js';
+import type { SessionStreamEvent } from '../runtime/session-types.js';
 
 const service = getAgentServerClient();
 const loopManager = getAgentServerLoopManager();
@@ -57,6 +58,20 @@ function notFound(res: ServerResponse, detail: string): void {
   sendJson(res, 404, error(detail));
 }
 
+function writeStreamEnvelope(res: ServerResponse, payload: unknown): void {
+  res.write(`${JSON.stringify(payload)}\n`);
+}
+
+function sendStreamError(res: ServerResponse, err: unknown): void {
+  const message = err instanceof Error ? err.message : String(err);
+  const event: SessionStreamEvent = {
+    type: 'error',
+    error: message,
+  };
+  writeStreamEnvelope(res, { event });
+  writeStreamEnvelope(res, { error: message });
+}
+
 export async function handleAgentServerRoutes(
   req: IncomingMessage,
   res: ServerResponse,
@@ -74,6 +89,31 @@ export async function handleAgentServerRoutes(
         loopManager.ensureLoop(result.agent.id, 250);
       }
       sendJson(res, 200, success(result));
+      return true;
+    }
+
+    if (pathname === '/api/agent-server/runs/stream' && method === 'POST') {
+      const body = await readJsonBody<AgentServerRunRequest>(req);
+      res.writeHead(200, {
+        'Content-Type': 'application/x-ndjson; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+        'Connection': 'keep-alive',
+      });
+      try {
+        const result = await service.runTask(body, {
+          onEvent(event) {
+            writeStreamEnvelope(res, { event });
+          },
+        });
+        if (result.agent.autonomy.enabled && result.agent.status === 'active') {
+          loopManager.ensureLoop(result.agent.id, 250);
+        }
+        writeStreamEnvelope(res, { result });
+      } catch (err) {
+        sendStreamError(res, err);
+      } finally {
+        res.end();
+      }
       return true;
     }
 

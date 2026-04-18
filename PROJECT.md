@@ -24,6 +24,7 @@
 - `T009`：拆分 Core context 契约与 harness 策略文档（已完成）：新增 `docs/context-core.md`，并将 `docs/context-harness.md` 明确定位为自研/custom backend harness 策略；最近更新 `2026-04-18`
 - `T010`：统一整理项目文档到 `docs/`（已完成）：新增 docs 索引，合并 runtime/backend 文档，任务板保留在根目录，消除过期路径和 backend 数量冲突；最近更新 `2026-04-18`
 - `T011`：集成 `openteam_agent` 自研 backend（已完成）：将 AI SDK runtime vendored 到本项目内，实现可独立运行的第 7 个 backend，并接入统一事件和工具桥；最近更新 `2026-04-18`
+- `T012`：Agent SDK 化（已完成）：整理包根 public SDK 入口，提供 createAgentClient / runText / runTask / backend capabilities 等薄接口；最近更新 `2026-04-18`
 
 ---
 
@@ -362,3 +363,220 @@
 #### Takeaway
 - `openteam_agent` 应是 Backend Harness 层的自研实现：模型 SDK 内置于 backend，工具桥和事件契约复用 AgentServer Core。
 - 当前已验证 `openteam_agent` 可以通过 AgentServer 统一工具桥调用全部 11 个 canonical tool primitives。
+
+---
+
+### T012
+
+#### 目标说明
+- 将当前分散的 `AgentServerService`、HTTP client、backend catalog、事件/工具类型整理成正式 SDK 入口。
+- 让其它项目优先从 package root 或 `sdk/` 导入，不需要读 `server/agent_server/*` 内部路径。
+- SDK 保持薄层：不重写 runtime，不把 backend harness 策略塞进 SDK。
+
+#### 成功标准
+- package root `index.ts` 暴露稳定 public API。
+- 存在 `createAgentClient()`，支持 in-process service 和 HTTP baseUrl 两种使用方式。
+- SDK client 支持 `runTask()`、`runText()`、`getRun()`、`listBackends()`、`getBackendCapabilities()`。
+- in-process SDK 支持 `onEvent` 流式事件回调。
+- 文档示例从内部路径迁移到 SDK 入口。
+- smoke 覆盖 SDK 入口调用 `openteam_agent`。
+
+#### TODO
+- [x] 在任务板登记 T012。
+- [x] 新增 `sdk/index.ts` 与根 `index.ts`。
+- [x] 更新 `package.json` main/types/exports 指向 SDK 入口。
+- [x] 增加 `npm run smoke:agent-sdk`，验证 package root SDK。
+- [x] 更新 README / public API / tutorial 中的 SDK 示例。
+- [x] 跑 build/test/smoke，确认 SDK 化没有破坏现有服务入口。
+
+#### 异常发现
+- 当前已有 SDK 内核，但入口分散在 `server/agent_server/service.ts`、`server/agent_server/http-client.ts`、`core/runtime/backend-catalog.ts`。
+- in-process SDK 使用 `openteam.json`，如果要覆盖 `OPENTEAM_CONFIG_PATH`，需要在导入 SDK 前设置环境变量；smoke 已使用动态 import 固化这一点。
+
+#### Takeaway
+- Agent SDK 应是“薄、稳定、面向项目”的入口；AgentServer Core 和 Backend Harness 仍保持现有边界。
+
+---
+
+### T013
+
+#### 目标说明
+- 继续打磨 Agent SDK，让其它项目可以通过稳定门面管理 agent 生命周期。
+- 补齐本地 SDK 与 HTTP SDK 的最小一致能力：创建 agent、查询 agent、列出 agent、列出 runs、查询 run。
+- 增加可读示例，减少接入者阅读内部 service/router 的需要。
+
+#### 成功标准
+- `createAgentClient()` 支持 `createAgent()`、`getAgent()`、`listAgents()`、`listRuns()`、`getRun()`。
+- HTTP client 与 in-process service 在上述生命周期 API 上保持同名同参。
+- package root 导出生命周期相关类型。
+- `docs/public-api.md` 与 `docs/tutorial.md` 说明 SDK 生命周期用法。
+- 存在本地 SDK 和 HTTP SDK 示例文件。
+- `npm run smoke:agent-sdk` 覆盖生命周期 API。
+
+#### TODO
+- [x] 在任务板登记 T013。
+- [x] 给 HTTP client 补 `listAgents()`。
+- [x] 给 SDK client 补生命周期方法。
+- [x] 从 package root 导出 `AgentManifest` / `CreateAgentRequest`。
+- [x] 增加 `examples/sdk-local.ts` 和 `examples/sdk-http.ts`。
+- [x] 更新公开 API 和教程文档。
+- [x] 扩展 `smoke:agent-sdk`，覆盖 `getAgent()` / `listAgents()` / `listRuns()` / `getRun()`。
+
+#### 异常发现
+- `AgentServerService` 和 HTTP 路由已经有生命周期能力，SDK 只是缺一个稳定、易读的门面。
+- HTTP SDK 目前仍不支持 `onEvent` 流式回调；流式事件先走 in-process SDK，HTTP 流式可以作为后续独立任务。
+
+#### Takeaway
+- 当前 SDK 已从“任务调用包装”推进到“最小 agent 生命周期 SDK”。再往前的主要方向是 HTTP streaming 和更完整的 package 发布体验，而不是继续扩大 Core。
+
+---
+
+### T014
+
+#### 目标说明
+- 收敛 SDK 的 package 发布面，避免 `npm pack` 把源码、dist、backend 扩展和临时数据全部打进包。
+- 保证 package 消费者仍能使用根 SDK、文档、examples 和内置 `openteam_agent` runtime。
+- 修正 `openteam_agent` vendored SDK 查找逻辑，使它作为依赖被宿主项目引用时不依赖宿主项目的 `process.cwd()`。
+
+#### 成功标准
+- package `files` 白名单只包含必要发布产物。
+- `openteam_agent` runtime 从当前包位置向上查找 vendored SDK，并保留当前仓库 cwd 兼容。
+- 文档说明 package local mode 与 standalone service mode 的边界。
+- `npm pack --dry-run --json` 包体明显收敛，并包含 `server/backend/openteam_agent`。
+
+#### TODO
+- [x] 在任务板登记 T014。
+- [x] 增加 package `files` 白名单。
+- [x] 修正 `openteam_agent` runtime root 查找逻辑。
+- [x] 更新 public API 文档中的 package/standalone 边界说明。
+- [x] 重新跑 pack/build/smoke 校验。
+
+#### 异常发现
+- 默认 npm pack 会纳入大量源文件和 backend 扩展，dry-run 约 44 MB packed / 188 MB unpacked / 19190 files。
+- vendored AI SDK 会被 pack 纳入，但旧查找方式只看宿主 cwd，作为 dependency 使用时容易找不到包内 runtime。
+
+#### Takeaway
+- SDK 发布面应该小而明确：package 负责 SDK、本地 `openteam_agent` 和文档示例；完整 native backend 运行环境由 standalone AgentServer 服务承载。
+
+---
+
+### T015
+
+#### 目标说明
+- 给 HTTP SDK 补齐流式事件能力，让远程项目接入时也能收到统一 `SessionStreamEvent`。
+- 保持协议简单：HTTP 层只转发 AgentServer Core 的标准事件，不引入 backend 特有事件。
+- 让 local SDK 和 HTTP SDK 在 `runTask(..., { onEvent })` 用法上保持一致。
+
+#### 成功标准
+- 新增 `POST /api/agent-server/runs/stream`。
+- streaming endpoint 输出 newline-delimited JSON：事件行为 `{ event }`，最终成功行为 `{ result }`，失败行为 `{ error }`。
+- HTTP client 支持 `runTaskStream()`。
+- `createAgentClient({ baseUrl })` 在传入 `onEvent` 时自动使用 streaming endpoint。
+- 文档说明 HTTP streaming 用法和协议形状。
+- `smoke:agent-sdk` 覆盖 local streaming 与 HTTP streaming。
+
+#### TODO
+- [x] 在任务板登记 T015。
+- [x] 增加 HTTP streaming route。
+- [x] 扩展 HTTP client 的 NDJSON 解析。
+- [x] 更新 SDK `runTask()` 的 HTTP `onEvent` 分支。
+- [x] 更新 public API / tutorial 文档。
+- [x] 扩展 SDK smoke 覆盖 HTTP streaming。
+
+#### 异常发现
+- supervisor 内部已经是 NDJSON 事件流，HTTP 层可以保持薄转发，不需要 SSE/WebSocket。
+- 旧 SDK 在 HTTP mode 下传入 `onEvent` 会直接报错，现在已改为自动走 `/runs/stream`。
+
+#### Takeaway
+- 现在 SDK 的本地和远程接入都能看到同一套标准事件；backend 差异仍停留在 adapter/harness 层。
+
+---
+
+### T016
+
+#### 目标说明
+- 将“npm 包安装后能否使用 SDK”的验证固化为正式 smoke。
+- 覆盖 package `files` 白名单、runtime dependencies、`openteam_agent` vendored SDK 路径、外部 managed launcher、supervisor 启动链路。
+- 防止 SDK 只在仓库根目录可用、作为 dependency 不可用的回归。
+
+#### 成功标准
+- 存在 `npm run smoke:agent-sdk:installed`。
+- 脚本会临时 `npm pack`、创建空 consumer 项目、安装 tarball、导入 `@agi4sci/agent-server`。
+- 安装后的 consumer 能用 `createAgentClient()` 调用全部 backend，并收到 `list_dir` 的 `tool-call` / `tool-result` 事件。
+- Native backend 通过 `OPENTEAM_BACKEND_BIN_DIR` 指向外部 managed launcher，不把所有 native backend 源码塞进 npm 包。
+- 脚本结束后清理临时目录和 tarball。
+
+#### TODO
+- [x] 在任务板登记 T016。
+- [x] 新增 `scripts/smoke-agent-sdk-installed.ts`。
+- [x] 新增 npm script `smoke:agent-sdk:installed`。
+- [x] 补齐顶层 `listSupportedBackends()` helper，与文档概念对齐。
+- [x] 给 SDK/openteam smoke 增加临时 supervisor 清理。
+- [x] 将 installed package smoke 升级为 all-backends，验证外部 managed launcher 接入。
+- [x] 更新教程验证命令。
+- [x] 跑 installed package smoke。
+
+#### 异常发现
+- 手工 installed-package smoke 曾暴露 `ws` 在 devDependencies 导致 supervisor 启动失败；已将 `ws` 移入 runtime dependencies。
+- 完整 native backend 源码体积很大，不适合全部放入 npm package；package local mode 通过外部 managed launcher 支持所有 backend。
+
+#### Takeaway
+- SDK 化不只看源码内调用是否通过，还要看发布包作为第三方依赖时是否真的能跑。
+
+---
+
+### T017
+
+#### 目标说明
+- 将“所有 backend 都支持 SDK/HTTP streaming 统一接入面”变成强校验。
+- 不只验证 `openteam_agent`，而是覆盖 `listSupportedBackends()` 返回的全部 backend。
+- 对 native backend 要求 managed launcher 存在；缺 launcher 时失败，避免把“没测到”误当成“已支持”。
+
+#### 成功标准
+- 存在 `npm run smoke:agent-sdk:all-backends`。
+- 脚本启动临时 HTTP AgentServer route，使用 `createAgentClient({ baseUrl })` 调用每个 backend。
+- 每个 backend 都必须通过 `runTask(..., { backend, onEvent })` 收到 `list_dir` 的 `tool-call` / `tool-result` 事件。
+- 脚本确认 `listSupportedBackends()` 与 backend catalog 一致。
+- 文档把 all-backends SDK smoke 列为统一接口验证项。
+
+#### TODO
+- [x] 在任务板登记 T017。
+- [x] 新增 `scripts/smoke-agent-sdk-all-backends.ts`。
+- [x] 新增 npm script `smoke:agent-sdk:all-backends`。
+- [x] 更新 public API / tutorial 文档。
+- [x] 运行 all-backends SDK smoke，确认 7 个 backend 都通过。
+
+#### 异常发现
+- 之前 SDK smoke 只覆盖 `openteam_agent`；这不足以证明所有 backend 都具备统一 SDK/HTTP 接入能力。
+- Native backend 的实际运行依赖 `server/backend/bin` 或 `OPENTEAM_BACKEND_BIN_DIR` 中的 managed launcher，测试必须把这个作为前置条件显式检查。
+
+#### Takeaway
+- “所有 backend 支持”应定义为：同一 SDK 方法、同一 backend 参数、同一事件/工具原语契约，在全部 backend 上可验证通过。
+
+---
+
+### T018
+
+#### 目标说明
+- 修复 all-backends smoke 并发/连续运行时暴露的 agent store 稳定性问题。
+- 避免 agent manifest 写入中的半截 JSON 被 `listAgents()` 读到，导致 loop manager 或 SDK smoke 崩溃。
+- 单个损坏 manifest 不应拖垮全局 agent 列表。
+
+#### 成功标准
+- `writeJson()` 使用同目录临时文件 + `rename()` 原子替换。
+- 空 JSON 文件读取为 `null`。
+- `listAgents()` 对单个 agent manifest 解析失败具备隔离能力。
+- `npm run smoke:agent-sdk` 在 all-backends smoke 后仍可稳定运行。
+
+#### TODO
+- [x] 在任务板登记 T018。
+- [x] 将 store JSON 写入改成原子替换。
+- [x] 让空 JSON 文件读取为 `null`。
+- [x] 让 `listAgents()` 跳过单个损坏 manifest。
+- [x] 重新运行 all-backends / SDK smoke 验证。
+
+#### 异常发现
+- 连续运行 all-backends smoke 后，`smoke:agent-sdk` 曾在 loop manager 的 `listAgents()` 中读到半截 JSON 并报 `Unexpected end of JSON input`。
+
+#### Takeaway
+- all-backends 支持不仅是 backend adapter 能跑，还要求共享 AgentServer Core 的持久化层能承受多 backend 连续写入。

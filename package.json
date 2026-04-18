@@ -3,8 +3,31 @@
   "version": "0.1.0",
   "description": "Standalone AgentServer runtime and backend adapter layer extracted from OpenTeam Studio.",
   "type": "module",
-  "main": "dist/server/index.js",
-  "types": "dist/server/index.d.ts",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist/",
+    "docs/",
+    "examples/",
+    "server/backend/openteam_agent/",
+    "openteam.example.json",
+    "README.md",
+    "PROJECT.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./sdk": {
+      "types": "./dist/sdk/index.d.ts",
+      "import": "./dist/sdk/index.js"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.js"
+    }
+  },
   "scripts": {
     "dev": "tsx watch server/index.ts",
     "dev:8080": "PORT=8080 npm run dev",
@@ -15,6 +38,9 @@
     "smoke:agent-server": "node --import tsx scripts/smoke-agent-server.ts",
     "smoke:agent-server:backends": "node --import tsx scripts/smoke-agent-server-backends.ts",
     "smoke:agent-server:tool-matrix": "node --import tsx scripts/smoke-agent-server-tool-matrix.ts",
+    "smoke:agent-sdk": "node --import tsx scripts/smoke-agent-sdk.ts",
+    "smoke:agent-sdk:all-backends": "node --import tsx scripts/smoke-agent-sdk-all-backends.ts",
+    "smoke:agent-sdk:installed": "node --import tsx scripts/smoke-agent-sdk-installed.ts",
     "smoke:openteam-agent": "node --import tsx scripts/smoke-openteam-agent-backend.ts",
     "test": "node --import tsx --test tests/*.test.ts"
   },
@@ -22,6 +48,7 @@
     "@hono/node-server": "^1.14.0",
     "hono": "^4.12.0",
     "uuid": "^10.0.0",
+    "ws": "^8.20.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {
@@ -32,8 +59,7 @@
     "playwright": "^1.58.2",
     "tsx": "^4.21.0",
     "typescript": "^5.7.0",
-    "vitest": "^3.0.0",
-    "ws": "^8.20.0"
+    "vitest": "^3.0.0"
   },
   "engines": {
     "node": ">=20.0.0"

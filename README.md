@@ -75,23 +75,16 @@ Backend ids and capabilities are documented in [Public API](./docs/public-api.md
 ## 最小调用示例
 
 ```ts
-import { AgentServerService } from './server/agent_server/service.js';
+import { createAgentClient } from '@agi4sci/agent-server';
 
-const service = new AgentServerService();
-
-const result = await service.runTask({
-  agent: {
-    id: 'repo-helper',
-    backend: 'codex',
-    workspace: '/absolute/path/to/workspace',
-    reconcileExisting: true,
-  },
-  input: {
-    text: 'List the repository files and summarize the project.',
-  },
+const agent = createAgentClient({
+  defaultBackend: 'openteam_agent',
+  defaultWorkspace: '/absolute/path/to/workspace',
 });
 
-console.log(result.run.output);
+const text = await agent.runText('List the repository files and summarize the project.');
+
+console.log(text);
 ```
 
 切换 backend 时通常只改：

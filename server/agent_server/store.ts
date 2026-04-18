@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { mkdir, readFile, readdir, rm, stat, writeFile } from 'fs/promises';
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { dirname, join } from 'path';
 import type {
@@ -46,8 +46,11 @@ async function ensureDir(dirPath: string): Promise<void> {
 }
 
 async function writeJson(path: string, value: unknown): Promise<void> {
-  await ensureDir(dirname(path));
-  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+  const dir = dirname(path);
+  await ensureDir(dir);
+  const tempPath = join(dir, `.${Date.now().toString(36)}-${randomUUID()}.tmp`);
+  await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+  await rename(tempPath, path);
 }
 
 async function readJsonFile<T>(path: string): Promise<T | null> {
@@ -55,6 +58,9 @@ async function readJsonFile<T>(path: string): Promise<T | null> {
     return null;
   }
   const raw = await readFile(path, 'utf8');
+  if (!raw.trim()) {
+    return null;
+  }
   return JSON.parse(raw) as T;
 }
 
@@ -186,7 +192,13 @@ export class AgentStore {
     const manifests = await Promise.all(
       entries
         .filter((entry) => entry.isDirectory())
-        .map((entry) => this.getAgent(entry.name)),
+        .map(async (entry) => {
+          try {
+            return await this.getAgent(entry.name);
+          } catch {
+            return null;
+          }
+        }),
     );
     return manifests.filter((item): item is AgentManifest => Boolean(item));
   }

@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { LocalDevChatMessage } from './local-dev-agent.js';
 import { runLocalDevToolAgentWithRequester } from './local-dev-agent.js';
 
@@ -27,7 +27,18 @@ type OpenTeamSdkRuntime = {
 };
 
 function getBundledRuntimeRoot(): string {
-  return join(process.cwd(), 'server', 'backend', 'openteam_agent', 'node_modules');
+  const relativeRuntime = join('server', 'backend', 'openteam_agent', 'node_modules');
+  const candidates = [
+    join(process.cwd(), relativeRuntime),
+  ];
+  let cursor = dirname(fileURLToPath(import.meta.url));
+  for (let depth = 0; depth < 8; depth += 1) {
+    candidates.push(join(cursor, relativeRuntime));
+    candidates.push(join(cursor, '..', relativeRuntime));
+    cursor = dirname(cursor);
+  }
+  const found = candidates.find((candidate) => existsSync(join(candidate, 'ai', 'dist', 'index.js')));
+  return found || candidates[0];
 }
 
 function getBundledPackageEntry(runtimeRoot: string, packageName: string): string {
