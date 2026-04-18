@@ -7,10 +7,14 @@ import { loadOpenTeamConfig } from '../../utils/openteam-config.js';
 import { appendFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 
-type ChatMessage = {
+export type LocalDevChatMessage = {
   role: 'system' | 'user' | 'assistant';
   content: string;
 };
+
+export type LocalDevTextCompletionRequester = (params: {
+  messages: LocalDevChatMessage[];
+}) => Promise<string>;
 
 type AgentHooks = {
   onToolCall?: (toolName: string, detail?: string) => void;
@@ -336,7 +340,7 @@ async function requestChatCompletion(params: {
   baseUrl: string;
   apiKey: string;
   model: string;
-  messages: ChatMessage[];
+  messages: LocalDevChatMessage[];
 }): Promise<string> {
   const requestUrl = resolveChatCompletionsUrl(params.baseUrl);
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -379,10 +383,9 @@ async function requestChatCompletion(params: {
   throw new Error('chat.completions exhausted retries without returning assistant text.');
 }
 
-export async function runLocalDevToolAgent(params: {
-  baseUrl: string;
-  apiKey: string;
-  model: string;
+export async function runLocalDevToolAgentWithRequester(params: {
+  modelLabel: string;
+  requestTextCompletion: LocalDevTextCompletionRequester;
   prompt: string;
   cwd: string;
   hooks?: AgentHooks;
@@ -395,7 +398,7 @@ export async function runLocalDevToolAgent(params: {
     requestedForceSummaryOnBudgetExhausted: params.forceSummaryOnBudgetExhausted,
   });
   const maxSteps = resolveLocalDevToolMaxSteps(policy.maxSteps);
-  const messages: ChatMessage[] = [
+  const messages: LocalDevChatMessage[] = [
     { role: 'system', content: buildSystemPrompt(maxSteps) },
     { role: 'user', content: params.prompt },
   ];
@@ -411,15 +414,10 @@ export async function runLocalDevToolAgent(params: {
     forceSummaryOnBudgetExhausted: policy.forceSummaryOnBudgetExhausted,
   });
 
-  params.hooks?.onStatus?.('running', `Calling local model ${params.model}`);
+  params.hooks?.onStatus?.('running', `Calling local model ${params.modelLabel}`);
 
   for (let step = 0; step < maxSteps; step += 1) {
-    const assistantText = await requestChatCompletion({
-      baseUrl: params.baseUrl,
-      apiKey: params.apiKey,
-      model: params.model,
-      messages,
-    });
+    const assistantText = await params.requestTextCompletion({ messages });
     messages.push({ role: 'assistant', content: assistantText });
 
     const toolCall = extractAndNormalizeLocalDevPrimitiveCall(assistantText, params.cwd);
@@ -527,12 +525,7 @@ export async function runLocalDevToolAgent(params: {
   messages.push({ role: 'user', content: forcedSummaryPrompt });
 
   try {
-    const assistantText = await requestChatCompletion({
-      baseUrl: params.baseUrl,
-      apiKey: params.apiKey,
-      model: params.model,
-      messages,
-    });
+    const assistantText = await params.requestTextCompletion({ messages });
     const toolCall = extractAndNormalizeLocalDevPrimitiveCall(assistantText, params.cwd);
     const hasEmbeddedProviderToolCallText = looksLikeEmbeddedProviderToolCallText(assistantText);
     const hasPlannedButUnexecutedToolWork = looksLikePlannedButUnexecutedToolWork(assistantText);
@@ -567,4 +560,30 @@ export async function runLocalDevToolAgent(params: {
     success: false,
     error: `Local tool agent exceeded ${maxSteps} steps and still did not return a usable partial summary.`,
   };
+}
+
+export async function runLocalDevToolAgent(params: {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  prompt: string;
+  cwd: string;
+  hooks?: AgentHooks;
+  maxSteps?: number;
+  forceSummaryOnBudgetExhausted?: boolean;
+}): Promise<{ success: true; result: string } | { success: false; error: string }> {
+  return runLocalDevToolAgentWithRequester({
+    modelLabel: params.model,
+    requestTextCompletion: ({ messages }) => requestChatCompletion({
+      baseUrl: params.baseUrl,
+      apiKey: params.apiKey,
+      model: params.model,
+      messages,
+    }),
+    prompt: params.prompt,
+    cwd: params.cwd,
+    hooks: params.hooks,
+    maxSteps: params.maxSteps,
+    forceSummaryOnBudgetExhausted: params.forceSummaryOnBudgetExhausted,
+  });
 }

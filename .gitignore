@@ -11,12 +11,16 @@ server/backend/**/openteam-local/
 
 # Backend build artifacts and dependency caches
 server/backend/**/node_modules/
+!server/backend/openteam_agent/node_modules/
+!server/backend/openteam_agent/node_modules/**
 server/backend/bin/
 server/backend/hermes_agent/venv/
 server/backend/hermes_agent/.venv/
 server/backend/hermes_agent/**/__pycache__/
 server/backend/hermes_agent/**/*.pyc
 server/backend/**/dist/
+!server/backend/openteam_agent/node_modules/**/dist/
+!server/backend/openteam_agent/node_modules/**/dist/**
 server/backend/**/build/
 server/backend/**/target/
 server/backend/**/.next/

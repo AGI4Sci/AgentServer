@@ -1,4 +1,5 @@
 export const BACKEND_IDS = [
+  'openteam_agent',
   'claude-code',
   'claude-code-rust',
   'codex',
@@ -21,12 +22,26 @@ export interface BackendCapabilities {
 export interface BackendDescriptor {
   id: BackendType;
   label: string;
-  family: 'claude-code' | 'codex' | 'hermes' | 'openclaw' | 'zeroclaw';
+  family: 'openteam' | 'claude-code' | 'codex' | 'hermes' | 'openclaw' | 'zeroclaw';
   executables: readonly string[];
   capabilities: BackendCapabilities;
 }
 
 export const BACKEND_CATALOG: readonly BackendDescriptor[] = [
+  {
+    id: 'openteam_agent',
+    label: 'OpenTeam Agent',
+    family: 'openteam',
+    executables: [],
+    capabilities: {
+      persistentSession: false,
+      permissionRequest: false,
+      interrupt: false,
+      toolInputStreaming: false,
+      nativeToolUse: false,
+      managedLauncher: false,
+    },
+  },
   {
     id: 'claude-code',
     label: 'Claude Code',

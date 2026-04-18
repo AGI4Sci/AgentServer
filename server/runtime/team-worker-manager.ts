@@ -7,6 +7,7 @@ import type {
   WorkerRuntimeType,
   WorkerSessionStatus,
 } from './team-worker-types.js';
+import { OpenTeamAgentSessionClient } from './clients/openteam-agent-session-client.js';
 import { ClaudeCodeTeamWorker } from './workers/claude-code-team-worker.js';
 import { ClaudeCodeRustTeamWorker } from './workers/claude-code-rust-team-worker.js';
 import { CodexTeamWorker } from './workers/codex-team-worker.js';
@@ -63,6 +64,9 @@ function getWorkersForRuntime(
 }
 
 function createWorker(runtime: WorkerRuntimeType): TeamWorker {
+  if (runtime === 'openteam_agent') {
+    return new SessionRunnerTeamWorker('openteam_agent', new OpenTeamAgentSessionClient());
+  }
   if (runtime === 'claude-code') {
     return new ClaudeCodeTeamWorker();
   }
@@ -110,7 +114,8 @@ async function getOrCreateWorker(
 }
 
 export function supportsRuntimeSupervisor(runtime: string): runtime is WorkerRuntimeType {
-  return runtime === 'claude-code'
+  return runtime === 'openteam_agent'
+    || runtime === 'claude-code'
     || runtime === 'claude-code-rust'
     || runtime === 'codex'
     || runtime === 'hermes-agent'

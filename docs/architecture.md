@@ -47,7 +47,7 @@ AgentServer Core
         |
         v
 Backend Harness
-  claude-code / claude-code-rust / codex / hermes-agent / openclaw / zeroclaw / v9
+  openteam_agent / claude-code / claude-code-rust / codex / hermes-agent / openclaw / zeroclaw / v9
   保持自治
   各自管理内部 system prompt、tool policy、permission、compaction、context strategy
 ```
@@ -61,7 +61,7 @@ Backend Harness
    它读取 AgentServer 的 run ledger、metrics、evaluation、context usage、policy snapshots，生成 proposal。变更需要通过 AgentServer 的安全接口应用，并保留 audit 和 rollback 信息。
 
 3. **Backend Harness 保持自治。**  
-   claude-code、codex 等前沿 agent 的内部 harness 不被外部拆解。v9 作为自研 backend 可以单独做 harness-level 实验，但这不是 AgentServer 的通用 evolution。
+   claude-code、codex 等前沿 agent 的内部 harness 不被外部拆解。`openteam_agent` 是当前自研 backend 的薄实现；v9 可以继续作为其内部 harness 实验方向，但这不是 AgentServer 的通用 evolution。
 
 换句话说：
 
@@ -217,7 +217,7 @@ docs/context-core.md
   AgentServer Core 通用 context 契约
 
 docs/context-harness.md
-  v9/custom backend harness context 策略
+  v9/custom backend harness context 策略；当前第一阶段落点是 openteam_agent
 ```
 
 它和 claude-code、codex、openclaw、zeroclaw 的内部 harness 是同级关系：
@@ -225,7 +225,7 @@ docs/context-harness.md
 ```text
 claude-code backend -> Claude Code harness
 codex backend       -> Codex harness
-v9 backend          -> v9 context design
+openteam_agent        -> self-developed harness seed, can evolve toward v9 context design
 ```
 
 v9 的价值在于：
@@ -237,7 +237,7 @@ v9 的价值在于：
 
 但 v9 的 prefix/work 分区、stable/dynamic boundary、COMPACTION TAG、内部 compaction 触发策略，不应该成为 AgentServer 对所有 backend 的公共策略。
 
-AgentServer 对 v9 的态度应该和其他 backend 一样：v9 是一个 backend，内部 harness 由 v9 自己负责。
+AgentServer 对 v9/openteam_agent 的态度应该和其他 backend 一样：它们属于 backend harness，内部策略由 backend 自己负责。
 
 v9 可以有自己的 harness-level evolution，例如调节 stable boundary threshold、compaction trigger、prefix/work layout、retrieval chain 等。但这类实验只属于 v9 backend 内部，不应混同于通用 Evolution Engine。
 
@@ -279,7 +279,7 @@ Backend Runtime
         |
         v
 Agent Backend
-  claude-code / claude-code-rust / codex / hermes-agent / openclaw / zeroclaw / v9 / future backend
+  openteam_agent / claude-code / claude-code-rust / codex / hermes-agent / openclaw / zeroclaw / v9 / future backend
   Owns internal harness, system prompt, tool policy, permission model, compaction
 ```
 
@@ -773,16 +773,16 @@ Backend Runtime       运行具体 backend
 Agent Backend         执行自己的内部 harness
 ```
 
-### 3.4 v9 backend 场景
+### 3.4 openteam_agent / v9 backend 场景
 
-v9 是一个 backend。
+`openteam_agent` 是当前代码中的自研 backend 种子实现；v9 是它可以继续演进的内部 harness context 策略方向。
 
 Core 通用 context 契约写在 `docs/context-core.md`。v9 的内部 harness context 策略写在 `docs/context-harness.md`。
 
-如果接入 v9，AgentServer 仍然只通过统一 runtime contract 调用它：
+AgentServer 仍然只通过统一 runtime contract 调用它：
 
 ```text
-AgentServer -> Backend Runtime -> v9 backend
+AgentServer -> Backend Runtime -> openteam_agent / v9 backend
 ```
 
 v9 内部可以实现自己的：

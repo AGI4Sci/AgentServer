@@ -29,7 +29,7 @@ AgentServer Core
         |
         v
 Backend Runtime
-  claude-code / claude-code-rust / codex / hermes-agent / openclaw / zeroclaw
+  openteam_agent / claude-code / claude-code-rust / codex / hermes-agent / openclaw / zeroclaw
 ```
 
 核心原则是：**AgentServer Core 保持通用，backend harness 保持自治。**
@@ -101,6 +101,8 @@ backend: 'hermes-agent'
 ```
 
 更完整的 API 示例见 [docs/public-api.md](./docs/public-api.md)。
+
+`openteam_agent` 是自研/custom backend 的薄实现。它内置 vendored AI SDK runtime，服务运行时不依赖外部 SDK checkout 或绝对本机路径。
 
 ## Notes
 

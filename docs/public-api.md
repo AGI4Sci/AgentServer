@@ -15,6 +15,7 @@ import { listSupportedBackends } from './server/runtime/session-runner-registry.
 
 console.log(listSupportedBackends());
 // [
+//   'openteam_agent',
 //   'claude-code',
 //   'claude-code-rust',
 //   'codex',
@@ -58,6 +59,8 @@ backend: 'hermes-agent'
 ```
 
 with the same task input and event handling code.
+
+`openteam_agent` is the self-developed/custom backend seed. It vendors its SDK runtime inside `server/backend/openteam_agent`, so AgentServer can run independently without importing an external SDK checkout. It still emits the same normalized AgentServer events and uses the same canonical tool primitive names.
 
 ## Run A Task In Process
 
@@ -108,6 +111,7 @@ To switch backend, change only this field:
 
 ```ts
 backend: 'claude-code'
+// or 'openteam_agent'
 // or 'claude-code-rust'
 // or 'codex'
 // or 'hermes-agent'
@@ -220,6 +224,13 @@ The smoke matrix for this contract is:
 
 ```bash
 npm run smoke:agent-server:tool-matrix
+```
+
+To test only the OpenTeam Agent backend:
+
+```bash
+npm run smoke:openteam-agent
+AGENT_SERVER_TOOL_MATRIX_BACKENDS=openteam_agent npm run smoke:agent-server:tool-matrix
 ```
 
 ## Compatibility Rule

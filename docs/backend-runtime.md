@@ -31,6 +31,7 @@ AgentServer Core 不直接理解每个 backend 的原生协议。差异集中在
 
 当前 backend：
 
+- `openteam_agent`
 - `claude-code`
 - `claude-code-rust`
 - `codex`
@@ -69,6 +70,8 @@ OPENTEAM_BACKEND_BIN_DIR || server/backend/bin
 ```
 
 这避免依赖全局 PATH，也避免本机安装的 `codex`、`openclaw`、`zeroclaw` 与项目内 backend 混淆。
+
+`openteam_agent` 是 direct backend，不需要 managed launcher。它通过 `SessionRunner` 直接接入 AgentServer，并在模型调用层使用项目内 vendored SDK runtime。
 
 ## Runtime Supervisor
 
@@ -151,19 +154,42 @@ npm run smoke:agent-server:tool-matrix
 - backend live smoke：验证 managed launcher、模型配置、runtime supervisor、真实 `list_dir` 工具调用链路。
 - tool matrix smoke：验证所有 supported backend 是否都能调用全部 canonical tool primitives。
 
+如果只验证 OpenTeam Agent backend：
+
+```bash
+npm run smoke:openteam-agent
+AGENT_SERVER_TOOL_MATRIX_BACKENDS=openteam_agent npm run smoke:agent-server:tool-matrix
+```
+
 ## 接入新 Backend
 
 新增 backend 的最小步骤：
 
 1. 在 [`core/runtime/backend-catalog.ts`](../core/runtime/backend-catalog.ts) 注册 id、family、executables、capabilities。
-2. 在 [`core/runtime/backend-paths.ts`](../core/runtime/backend-paths.ts) 注册 managed backend 路径。
+2. 如果 backend 需要项目内 launcher，在 [`core/runtime/backend-paths.ts`](../core/runtime/backend-paths.ts) 注册 managed backend 路径。
 3. 增加 session client 或 team worker。
 4. 接入 [`server/runtime/session-runner-registry.ts`](../server/runtime/session-runner-registry.ts)。
 5. 接入 [`server/runtime/team-worker-manager.ts`](../server/runtime/team-worker-manager.ts)。
 6. 如有原生事件，更新 [`server/runtime/workers/backend-event-normalizers.ts`](../server/runtime/workers/backend-event-normalizers.ts)。
-7. 在 [`scripts/build-openteam-backends.ts`](../scripts/build-openteam-backends.ts) 增加 launcher 构建。
+7. 如果是 managed backend，在 [`scripts/build-openteam-backends.ts`](../scripts/build-openteam-backends.ts) 增加 launcher 构建。
 8. 增加 fixture parity。
 9. 跑 `npm run build`、`npm test`、`npm run smoke:agent-server:backends`。
+
+## OpenTeam Agent
+
+`openteam_agent` 是 `docs/context-harness.md` 所指的自研/custom backend 的第一阶段实现：
+
+- 模型调用层使用 `server/backend/openteam_agent/node_modules` 下的 vendored AI SDK runtime。
+- 工具调用仍走 AgentServer shared tool bridge，因此上层看到的是统一 `tool-call` / `tool-result` 事件。
+- 它是 Backend Harness 层实现，不代表 v9 context design 已经进入 AgentServer Core。
+- 当前是 direct backend，`managedLauncher=false`，不生成 `openteam_*` launcher。
+- 服务运行不依赖外部 SDK checkout 或绝对本机路径。
+
+验证：
+
+```bash
+AGENT_SERVER_TOOL_MATRIX_BACKENDS=openteam_agent npm run smoke:agent-server:tool-matrix
+```
 
 ## Hermes Agent
 

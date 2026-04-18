@@ -116,7 +116,7 @@ const results: Array<{ backend: string; status: 'passed' | 'skipped' | 'failed';
 try {
 for (const backend of BACKEND_CATALOG) {
   const executable = resolveManagedBackendExecutableForBackend(backend.id);
-  if (!executable) {
+  if (backend.capabilities.managedLauncher && !executable) {
     results.push({
       backend: backend.id,
       status: 'skipped',
@@ -170,7 +170,7 @@ for (const backend of BACKEND_CATALOG) {
     results.push({
       backend: backend.id,
       status: 'passed',
-      detail: `launcher=${executable} run=${result.run.id}`,
+      detail: `launcher=${executable ?? 'direct'} run=${result.run.id}`,
     });
   } catch (error) {
     results.push({

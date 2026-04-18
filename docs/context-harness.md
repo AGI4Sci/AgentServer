@@ -20,6 +20,13 @@ context-harness.md
 
 本文档中的 `prefix/work` 物理布局、`stable_work / dynamic_work`、`COMPACTION TAG`、`PARTIAL_COMPACTION TAG` 和 harness-level evolution 都应留在自定义 backend 内部。AgentServer Core 只吸收其中通用、安全、可审计的原则。
 
+当前代码中的第一阶段落点是 `openteam_agent` backend：
+
+- 它作为自研 harness 的种子实现接入 Backend Runtime。
+- 模型调用层使用 `server/backend/openteam_agent` 内置的 vendored AI SDK runtime。
+- 工具执行仍复用 AgentServer shared tool bridge，保证上层看到统一工具原语和统一事件。
+- 本文档后续的 v9 compaction / prefix-work layout / harness-level evolution 仍属于 backend 内部策略，不是 AgentServer Core 的公共协议。
+
 ---
 
 ## 第一章 设计原则

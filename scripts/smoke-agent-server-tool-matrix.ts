@@ -39,6 +39,10 @@ const DEFAULT_TOOLS = process.env.AGENT_SERVER_TOOL_MATRIX_TOOLS?.trim()
   ? process.env.AGENT_SERVER_TOOL_MATRIX_TOOLS.split(',').map((item) => item.trim()).filter(Boolean) as ToolName[]
   : TOOL_NAMES;
 
+const DEFAULT_BACKENDS = process.env.AGENT_SERVER_TOOL_MATRIX_BACKENDS?.trim()
+  ? new Set(process.env.AGENT_SERVER_TOOL_MATRIX_BACKENDS.split(',').map((item) => item.trim()).filter(Boolean))
+  : null;
+
 async function readRequestBody(req: IncomingMessage): Promise<string> {
   return await new Promise((resolve, reject) => {
     let body = '';
@@ -253,8 +257,11 @@ const results: Array<{
 
 try {
   for (const backend of BACKEND_CATALOG) {
+    if (DEFAULT_BACKENDS && !DEFAULT_BACKENDS.has(backend.id)) {
+      continue;
+    }
     const executable = resolveManagedBackendExecutableForBackend(backend.id);
-    if (!executable) {
+    if (backend.capabilities.managedLauncher && !executable) {
       for (const tool of DEFAULT_TOOLS) {
         results.push({
           backend: backend.id,

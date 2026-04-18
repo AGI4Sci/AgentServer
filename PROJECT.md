@@ -23,6 +23,7 @@
 - `T008`：补充公共 API 薄文档（已完成）：新增 `docs/public-api.md`，说明 `runTask`、HTTP facade、backend 列表和 capability 查询示例；最近更新 `2026-04-18`
 - `T009`：拆分 Core context 契约与 harness 策略文档（已完成）：新增 `docs/context-core.md`，并将 `docs/context-harness.md` 明确定位为自研/custom backend harness 策略；最近更新 `2026-04-18`
 - `T010`：统一整理项目文档到 `docs/`（已完成）：新增 docs 索引，合并 runtime/backend 文档，任务板保留在根目录，消除过期路径和 backend 数量冲突；最近更新 `2026-04-18`
+- `T011`：集成 `openteam_agent` 自研 backend（已完成）：将 AI SDK runtime vendored 到本项目内，实现可独立运行的第 7 个 backend，并接入统一事件和工具桥；最近更新 `2026-04-18`
 
 ---
 
@@ -327,3 +328,37 @@
 
 #### Takeaway
 - 文档需要和代码一样有单一真相源：主题正文放 `docs/`，旧位置只做导航。
+
+---
+
+### T011
+
+#### 目标说明
+- 将 `docs/context-harness.md` 中描述的自研/custom agent backend 落成一个薄 backend：`openteam_agent`。
+- 模型调用层使用 vendored AI SDK runtime，不依赖外部绝对路径。
+- 工具执行和事件输出继续复用 AgentServer 的统一工具原语与标准事件，不把 v9 harness 策略塞进 AgentServer Core。
+
+#### 成功标准
+- backend catalog 暴露第 7 个 backend：`openteam_agent`。
+- `listSupportedBackends()` / capabilities 能看到 `openteam_agent`。
+- `openteam_agent` 通过 `SessionRunner` 接入 `AgentServerService.runTask`。
+- 新 backend 的工具调用事件仍归一到 `tool-call` / `tool-result` / `result`。
+- smoke tool matrix 能覆盖 `openteam_agent` 的统一工具原语。
+- 文档说明 `openteam_agent` 的定位：自研 harness 种子实现，不代表 v9 context design 已全部进入 Core。
+
+#### TODO
+- [x] 在任务板登记 T011。
+- [x] 抽出可复用的 local-dev 工具循环，让 backend 可替换模型调用层。
+- [x] 增加项目内 vendored SDK 加载器和 `openteam_agent` session client。
+- [x] 将 `openteam_agent` 接入 backend catalog、runner registry、capabilities 示例和 smoke matrix。
+- [x] 更新公开 API / backend runtime 文档，说明第 7 个 backend 与内置 SDK 运行方式。
+- [x] 运行 build/test/smoke，确认第 7 个 backend 可通过统一工具桥干活。
+- [x] 增加 `npm run smoke:openteam-agent`，单独验证 `openteam_agent` 的公开 `runTask` 入口、隔离 supervisor、vendored SDK 和 `list_dir` 工具事件。
+
+#### 异常发现
+- 不能硬编码机器本地 SDK checkout 路径；SDK 运行产物已拷贝到 `server/backend/openteam_agent/node_modules`。
+- `openteam_agent` 是 direct backend，不需要 `openteam_*` managed launcher；smoke matrix 需要理解 `managedLauncher=false`。
+
+#### Takeaway
+- `openteam_agent` 应是 Backend Harness 层的自研实现：模型 SDK 内置于 backend，工具桥和事件契约复用 AgentServer Core。
+- 当前已验证 `openteam_agent` 可以通过 AgentServer 统一工具桥调用全部 11 个 canonical tool primitives。

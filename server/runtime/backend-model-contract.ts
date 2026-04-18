@@ -30,6 +30,11 @@ export interface BackendModelSelection {
 }
 
 const BACKEND_MODEL_CONTRACTS: Record<BackendType, BackendModelContract> = {
+  'openteam_agent': {
+    backend: 'openteam_agent',
+    mode: 'model-name',
+    description: 'Consume modelName through AI SDK OpenAI-compatible provider and keep harness policy inside the backend.',
+  },
   'claude-code': {
     backend: 'claude-code',
     mode: 'model-name',

@@ -6,6 +6,7 @@ import {
 } from '../../core/runtime/backend-catalog.js';
 import { getTeamRegistry } from '../../core/team/registry.js';
 import type { TeamRuntimeConfig } from '../../core/team/types.js';
+import { OpenTeamAgentSessionClient } from './clients/openteam-agent-session-client.js';
 import { ClaudeCodeSessionClient } from './clients/claude-code-session-client.js';
 import { ClaudeCodeRustSessionClient } from './clients/claude-code-rust-session-client.js';
 import { CodexSessionClient } from './clients/codex-session-client.js';
@@ -15,6 +16,7 @@ import { ZeroClawSessionClient } from './clients/zeroclaw-session-client.js';
 import type { SessionClientType, SessionRunner } from './session-types.js';
 
 const RUNNER_REGISTRY: Record<BackendType, SessionRunner> = {
+  'openteam_agent': new OpenTeamAgentSessionClient(),
   'claude-code': new ClaudeCodeSessionClient(),
   'claude-code-rust': new ClaudeCodeRustSessionClient(),
   codex: new CodexSessionClient(),
