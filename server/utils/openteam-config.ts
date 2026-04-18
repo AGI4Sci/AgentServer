@@ -166,7 +166,7 @@ const DEFAULT_OPENTEAM_CONFIG: OpenTeamConfig = {
   },
   runtime: {
     supervisor: {
-      port: 8766,
+      port: 8767,
       snapshotFlushMs: 10_000,
     },
     blackboard: {

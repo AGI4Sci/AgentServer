@@ -10,7 +10,9 @@ import type {
 import { ClaudeCodeTeamWorker } from './workers/claude-code-team-worker.js';
 import { ClaudeCodeRustTeamWorker } from './workers/claude-code-rust-team-worker.js';
 import { CodexTeamWorker } from './workers/codex-team-worker.js';
+import { HermesAgentDirectSessionClient } from './clients/hermes-agent-session-client.js';
 import { OpenClawTeamWorker } from './workers/openclaw-team-worker.js';
+import { SessionRunnerTeamWorker } from './workers/session-runner-team-worker.js';
 import { ZeroClawTeamWorker } from './workers/zeroclaw-team-worker.js';
 
 interface TeamWorker {
@@ -70,6 +72,9 @@ function createWorker(runtime: WorkerRuntimeType): TeamWorker {
   if (runtime === 'codex') {
     return new CodexTeamWorker();
   }
+  if (runtime === 'hermes-agent') {
+    return new SessionRunnerTeamWorker('hermes-agent', new HermesAgentDirectSessionClient());
+  }
   if (runtime === 'openclaw') {
     return new OpenClawTeamWorker();
   }
@@ -108,6 +113,7 @@ export function supportsRuntimeSupervisor(runtime: string): runtime is WorkerRun
   return runtime === 'claude-code'
     || runtime === 'claude-code-rust'
     || runtime === 'codex'
+    || runtime === 'hermes-agent'
     || runtime === 'openclaw'
     || runtime === 'zeroclaw';
 }

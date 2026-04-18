@@ -2,6 +2,7 @@ node_modules/
 dist/
 coverage/
 .DS_Store
+.instance-id
 
 # Local runtime state
 openteam.json
@@ -11,6 +12,10 @@ server/backend/**/openteam-local/
 # Backend build artifacts and dependency caches
 server/backend/**/node_modules/
 server/backend/bin/
+server/backend/hermes_agent/venv/
+server/backend/hermes_agent/.venv/
+server/backend/hermes_agent/**/__pycache__/
+server/backend/hermes_agent/**/*.pyc
 server/backend/**/dist/
 server/backend/**/build/
 server/backend/**/target/

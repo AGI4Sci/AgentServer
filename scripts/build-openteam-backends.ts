@@ -160,11 +160,47 @@ exec node "$DEV" "$@"
   );
 }
 
+function buildHermesAgentLauncher(): void {
+  const outputPath = join(binDir, `openteam_hermes_agent${isWindows ? '.cmd' : ''}`);
+  if (isWindows) {
+    writeExecutable(
+      outputPath,
+      [
+        '@echo off',
+        'setlocal',
+        'set "SCRIPT_DIR=%~dp0"',
+        'for %%I in ("%SCRIPT_DIR%..\\..\\..") do set "PROJECT_ROOT=%%~fI"',
+        'set "ENTRY=%PROJECT_ROOT%\\server\\backend\\hermes_agent"',
+        'set "PYTHONPATH=%ENTRY%;%PYTHONPATH%"',
+        'cd /d "%ENTRY%"',
+        'python -m acp_adapter %*',
+        '',
+      ].join('\r\n'),
+    );
+    return;
+  }
+  writeExecutable(
+    outputPath,
+    renderUnixLauncher(`
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+ENTRY="$PROJECT_ROOT/server/backend/hermes_agent"
+export PYTHONPATH="$ENTRY:$PYTHONPATH"
+cd "$ENTRY"
+if command -v python3 >/dev/null 2>&1; then
+  exec python3 -m acp_adapter "$@"
+fi
+exec python -m acp_adapter "$@"
+`.trim()),
+  );
+}
+
 function main(): void {
   ensureDir(binDir);
   buildRustTargets();
   buildClaudeCodeLauncher();
   buildOpenClawLauncher();
+  buildHermesAgentLauncher();
   console.log(`[done] backend launchers are available in ${binDir}`);
 }
 

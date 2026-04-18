@@ -128,6 +128,7 @@ function buildDiagnostics(): SupervisorDiagnosticsResponse {
     service: 'runtime-supervisor',
     pid: process.pid,
     startedAt: SUPERVISOR_STARTED_AT,
+    projectRoot: PROJECT_ROOT,
     contracts: listBackendModelContracts(),
     sessions,
     snapshot: loadRuntimeSessionSnapshot(),
@@ -219,6 +220,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         service: 'runtime-supervisor',
         pid: process.pid,
         startedAt: SUPERVISOR_STARTED_AT,
+        projectRoot: PROJECT_ROOT,
       },
     });
     return;

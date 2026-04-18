@@ -45,6 +45,11 @@ const BACKEND_MODEL_CONTRACTS: Record<BackendType, BackendModelContract> = {
     mode: 'model-name',
     description: 'Consume modelName only and let the backend own provider resolution.',
   },
+  'hermes-agent': {
+    backend: 'hermes-agent',
+    mode: 'provider-qualified',
+    description: 'Consume provider/modelName when available; Hermes keeps its own provider and memory strategy internally.',
+  },
   openclaw: {
     backend: 'openclaw',
     mode: 'provider-qualified',

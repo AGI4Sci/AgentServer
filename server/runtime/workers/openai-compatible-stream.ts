@@ -30,7 +30,9 @@ export function containsUnexecutedToolIntentText(text: string | null | undefined
   if (containsEmbeddedProviderToolCallText(normalized)) {
     return true;
   }
-  const hasPseudoInvocation = /工具调用[:：]|tool[_\s-]?calls?[:：]|list_dir\s*\(|list_directories\s*\(|list_directory\s*\(|catalog_file_or_directory\s*\(|python_code_execution|python_repl|shell_execute|os\.listdir\(|directory_path|dir_path|terminal\.run|<python_execution>|<tool\b|<invoke\s+name=/i.test(normalized);
+  const hasCanonicalToolXml = /<(?:append_file|read_file|write_file|list_dir|grep_search|run_command|apply_patch|web_search|web_fetch|browser_open|browser_activate)\b/i.test(normalized);
+  const hasPseudoInvocation = hasCanonicalToolXml
+    || /工具调用[:：]|tool[_\s-]?calls?[:：]|list_dir\s*\(|list_directories\s*\(|list_directory\s*\(|catalog_file_or_directory\s*\(|python_code_execution|python_repl|shell_execute|os\.listdir\(|directory_path|dir_path|terminal\.run|<python_execution>|<tool\b|<invoke\s+name=/i.test(normalized);
   const hasToolPlanning = /我将使用.*工具|让我们执行工具调用|使用可用工具|请使用.*工具|不要猜测|执行中\.\.\.|i(?:'| wi)ll use .*tool|let me use .*tool|let me call .*tool|do not guess|use the available tool|use the provided tool|i will use the .* command/i.test(normalized);
   const hasCodePreview = /```(?:json|python|bash|sh|shell)\b/i.test(normalized);
   const hasObservedToolOutput = /(?:^|\n)Tool result for |STATUS:\s*(?:success|failure)|exit_code=|stdout:|stderr:|path=\/|status=\d+|根据工具(?:查询|执行|返回)结果|当前工作目录[:：]\s*\/|当前工作目录（`?\//i.test(normalized);

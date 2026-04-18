@@ -1,15 +1,50 @@
 # AgentServer
 
-Standalone AgentServer runtime and backend adapter layer extracted from OpenTeam Studio.
+AgentServer 是一个可独立运行的 **long-running agent runtime**。
 
-This repository contains:
+它的目标是把“长期工作的 agent”从具体产品里抽出来，做成一个通用、稳定、可审计的运行层。上层项目只需要告诉它：
 
-- `server/agent_server`: the long-lived agent service, store, HTTP client types, and autonomy loop.
-- `server/backend`: backend source trees and integration notes for Claude Code, Claude Code Rust, Codex, OpenClaw, and ZeroClaw.
-- `server/runtime` and `server/runtime-supervisor`: shared runtime contracts, worker launchers, event normalization, local development tools, and supervisor plumbing.
-- `core/runtime`: backend catalog, runtime metadata, and shared coordination types used by AgentServer.
+- 用哪个 backend agent
+- 在哪个 workspace 工作
+- 要执行什么任务
+- 需要附带哪些项目 metadata
 
-Generated artifacts, dependency folders, runtime state, and local secrets are intentionally excluded.
+AgentServer 负责维护长期 agent 状态、session、context、run audit、工具事件和恢复能力。
+
+## 项目定位
+
+AgentServer 不是一个新的模型，也不是某个单一 agent harness。它更像一个 **Agent Runtime Gateway**：
+
+```text
+Any Project
+  OpenTeam / IDE / CI / Research App / Robot Platform
+        |
+        | runTask(agent, input, metadata)
+        v
+AgentServer Core
+  long-running agent state
+  external auditable context
+  run gateway
+  audit / recovery / maintenance
+        |
+        v
+Backend Runtime
+  claude-code / claude-code-rust / codex / hermes-agent / openclaw / zeroclaw
+```
+
+核心原则是：**AgentServer Core 保持通用，backend harness 保持自治。**
+
+AgentServer 只管理跨 backend 都成立的外部上下文和审计数据；每个 backend 自己管理内部 system prompt、tool policy、memory、skill、compaction 和 provider 策略。
+
+## 主要功能
+
+- **统一任务入口**：通过 `AgentServerService.runTask(...)` 或 `POST /api/agent-server/runs` 调用不同 backend。
+- **长期 agent 状态**：维护 agent、session、memory、persistent state、current work 和 run history。
+- **统一 backend 切换**：上层基本只需切换 `agent.backend` 或 `runtime.backend` 参数。
+- **标准事件流**：归一化 `status`、`text-delta`、`tool-call`、`tool-result`、`permission-request`、`result`、`error`。
+- **可审计上下文**：记录 `contextRefs`、metrics、evaluation、metadata 和 run events。
+- **维护与恢复**：支持 context snapshot、compaction、session finalize、persistent recovery、revive 和 recovery acknowledgement。
+- **可选演化层**：Evolution Engine 可以读取 run ledger 并生成 proposal，但复杂自进化决策不进入 Core。
 
 ## Quick Start
 
@@ -20,33 +55,52 @@ npm run build
 npm run smoke:agent-server
 ```
 
-For a full walkthrough, see [TUTORIAL.md](./TUTORIAL.md).
+## Documentation
+
+The documentation index is [docs/README.md](./docs/README.md). The engineering task board stays at [PROJECT.md](./PROJECT.md).
+
+Start here:
+
+- [Public API](./docs/public-api.md) - integration contract, backend ids, normalized events, and tool primitives
+- [Architecture](./docs/architecture.md)
+- [Backend Runtime](./docs/backend-runtime.md)
+- [Agent Server Runtime](./docs/agent-server-runtime.md)
+- [Tutorial](./docs/tutorial.md)
+- [Project Board](./PROJECT.md)
 
 ## Supported Backends
 
-- `claude-code`
-- `claude-code-rust`
-- `codex`
-- `openclaw`
-- `zeroclaw`
+Backend ids and capabilities are documented in [Public API](./docs/public-api.md#choose-a-backend). The code truth source is `core/runtime/backend-catalog.ts`.
 
-Backend metadata is centralized in `core/runtime/backend-catalog.ts`.
+## 最小调用示例
 
-## Local Tools
+```ts
+import { AgentServerService } from './server/agent_server/service.js';
 
-AgentServer can expose these local development tool calls when `localDevPolicy.enabled` is true:
+const service = new AgentServerService();
 
-- `list_dir`
-- `read_file`
-- `write_file`
-- `append_file`
-- `grep_search`
-- `run_command`
-- `apply_patch`
-- `web_fetch`
-- `web_search`
-- `browser_activate`
-- `browser_open`
+const result = await service.runTask({
+  agent: {
+    id: 'repo-helper',
+    backend: 'codex',
+    workspace: '/absolute/path/to/workspace',
+    reconcileExisting: true,
+  },
+  input: {
+    text: 'List the repository files and summarize the project.',
+  },
+});
+
+console.log(result.run.output);
+```
+
+切换 backend 时通常只改：
+
+```ts
+backend: 'hermes-agent'
+```
+
+更完整的 API 示例见 [docs/public-api.md](./docs/public-api.md)。
 
 ## Notes
 

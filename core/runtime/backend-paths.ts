@@ -5,6 +5,7 @@ export type ManagedBackendName =
   | 'claude_code'
   | 'claude_code_rust'
   | 'codex'
+  | 'hermes_agent'
   | 'openclaw'
   | 'runtime_supervisor'
   | 'zeroclaw';

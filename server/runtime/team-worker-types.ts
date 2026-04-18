@@ -7,7 +7,7 @@ import type {
 } from './session-types.js';
 import type { RuntimeEventProtocolVersion } from './runtime-event-contract.js';
 
-export type WorkerRuntimeType = 'claude-code' | 'claude-code-rust' | 'codex' | 'openclaw' | 'zeroclaw';
+export type WorkerRuntimeType = 'claude-code' | 'claude-code-rust' | 'codex' | 'hermes-agent' | 'openclaw' | 'zeroclaw';
 
 export interface WorkerSessionStatus {
   cacheKey?: string | null;

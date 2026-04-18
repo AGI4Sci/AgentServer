@@ -173,7 +173,7 @@ function looksLikePlannedButUnexecutedToolWork(text: string): boolean {
     return false;
   }
   const hasBashFence = /```(?:bash|sh|shell)\b[\s\S]*?```/i.test(normalized);
-  const hasToolMarkup = /<(?:minimax:tool_call|tool_call|invoke\s+name=|read_file|write_file|list_dir|grep_search|run_command|apply_patch|web_fetch|browser_open|browser_activate)>/i.test(normalized);
+  const hasToolMarkup = /<(?:minimax:tool_call|tool_call|invoke\s+name=|append_file|read_file|write_file|list_dir|grep_search|run_command|apply_patch|web_search|web_fetch|browser_open|browser_activate)>/i.test(normalized);
   if (!hasBashFence || hasToolMarkup) {
     return false;
   }

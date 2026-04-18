@@ -38,6 +38,11 @@ const TOOL_NAMES = [
 ] as const;
 
 const MAX_OUTPUT_CHARS = 12_000;
+const WEB_SEARCH_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (compatible; OpenTeamStudioRuntime/1.0; +https://localhost/openteam)',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'Accept-Language': 'en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7',
+};
 
 function truncate(value: string, limit = MAX_OUTPUT_CHARS): string {
   if (value.length <= limit) {
@@ -944,6 +949,41 @@ async function runCommand(command: string, cwd: string): Promise<LocalDevPrimiti
   });
 }
 
+async function fetchWebSearchPage(query: string): Promise<{ provider: string; url: string; response: Response; text: string }> {
+  const providers = [
+    {
+      provider: 'duckduckgo-html',
+      url: `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`,
+    },
+    {
+      provider: 'bing',
+      url: `https://www.bing.com/search?q=${encodeURIComponent(query)}`,
+    },
+  ];
+  const failures: string[] = [];
+  for (const candidate of providers) {
+    try {
+      const response = await fetch(candidate.url, {
+        headers: WEB_SEARCH_HEADERS,
+        signal: AbortSignal.timeout(15_000),
+      });
+      const text = await response.text();
+      if (response.ok) {
+        return {
+          provider: candidate.provider,
+          url: response.url || candidate.url,
+          response,
+          text,
+        };
+      }
+      failures.push(`${candidate.provider}: status=${response.status}`);
+    } catch (error) {
+      failures.push(`${candidate.provider}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  throw new Error(`web_search failed for all providers: ${failures.join(' | ')}`);
+}
+
 export async function executeLocalDevPrimitiveCall(
   call: LocalDevPrimitiveCall,
   options: { cwd: string },
@@ -1032,16 +1072,10 @@ export async function executeLocalDevPrimitiveCall(
     if (!query) {
       throw new Error('web_search requires <query>.');
     }
-    const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'OpenTeamStudioRuntime/1.0 (+https://localhost/openteam)',
-      },
-    });
-    const text = await response.text();
+    const { provider, url, response, text } = await fetchWebSearchPage(query);
     return {
       ok: response.ok,
-      output: `status=${response.status}\nurl=${url}\nquery=${query}\n${truncate(text)}`,
+      output: `status=${response.status}\nprovider=${provider}\nurl=${url}\nquery=${query}\n${truncate(text)}`,
     };
   }
 

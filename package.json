@@ -14,6 +14,7 @@
     "runtime-supervisor": "node --import tsx server/runtime-supervisor/index.ts",
     "smoke:agent-server": "node --import tsx scripts/smoke-agent-server.ts",
     "smoke:agent-server:backends": "node --import tsx scripts/smoke-agent-server-backends.ts",
+    "smoke:agent-server:tool-matrix": "node --import tsx scripts/smoke-agent-server-tool-matrix.ts",
     "test": "node --import tsx --test tests/*.test.ts"
   },
   "dependencies": {

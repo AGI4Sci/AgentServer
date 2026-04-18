@@ -223,6 +223,42 @@ export function normalizeZeroClawNativeEvent(raw: unknown): SessionStreamEvent[]
   return [];
 }
 
+export function normalizeHermesAgentNativeEvent(raw: unknown): SessionStreamEvent[] {
+  const payload = raw as Record<string, unknown>;
+  const type = typeof payload.type === 'string' ? payload.type : '';
+  if ((type === 'text_delta' || type === 'text-delta' || type === 'assistant.delta') && typeof payload.text === 'string') {
+    return [normalizeSessionStreamEvent({ type: 'text-delta', text: payload.text, raw })];
+  }
+  if ((type === 'tool_start' || type === 'tool-call') && typeof payload.toolName === 'string') {
+    return [normalizeSessionStreamEvent({
+      type: 'tool-call',
+      toolName: normalizeToolName(payload.toolName),
+      detail: typeof payload.detail === 'string' ? payload.detail : compactDetail(payload.args),
+      raw,
+    })];
+  }
+  if ((type === 'tool_complete' || type === 'tool-result') && typeof payload.toolName === 'string') {
+    return [normalizeSessionStreamEvent({
+      type: 'tool-result',
+      toolName: normalizeToolName(payload.toolName),
+      detail: typeof payload.detail === 'string' ? payload.detail : undefined,
+      output: typeof payload.output === 'string' ? payload.output : JSON.stringify(payload.output ?? ''),
+      raw,
+    })];
+  }
+  if ((type === 'final' || type === 'result') && typeof payload.output === 'string') {
+    return [normalizeSessionStreamEvent({ type: 'result', output: resultOutput(payload.output), raw })];
+  }
+  if (type === 'error') {
+    const message = messageFrom(payload, 'Hermes Agent backend error');
+    return [
+      normalizeSessionStreamEvent({ type: 'error', error: message, raw }),
+      normalizeSessionStreamEvent({ type: 'result', output: errorOutput(message), raw }),
+    ];
+  }
+  return [];
+}
+
 export function normalizeNativeEvents(backend: FixtureBackend, raws: unknown[]): SessionStreamEvent[] {
   return raws.flatMap((raw) => {
     if (backend === 'codex') {
@@ -233,6 +269,9 @@ export function normalizeNativeEvents(backend: FixtureBackend, raws: unknown[]):
     }
     if (backend === 'zeroclaw') {
       return normalizeZeroClawNativeEvent(raw);
+    }
+    if (backend === 'hermes-agent') {
+      return normalizeHermesAgentNativeEvent(raw);
     }
     return normalizeClaudeCodeNativeEvent(raw);
   });

@@ -5,7 +5,8 @@
 ## 使用约定
 - 本文档作为 AgentServer 工程任务板使用，只保留正在推进或待推进的任务。
 - 每个任务只保留 `目标说明 / 成功标准 / TODO / 异常发现 / Takeaway`。
-- 设计原则、架构说明、接口语义写在 `agent-server-architecture.md`；任务拆解和执行状态写在本文档。
+- 设计原则、架构说明、接口语义写在 `docs/architecture.md`；任务拆解和执行状态写在本文档。
+- 文档入口、导航和主题归档统一放在 `docs/` 目录。
 - AgentServer Core 保持通用、稳定、简洁；复杂自进化决策不进入核心。
 - Evolution Engine 作为可选插件/服务，读取 AgentServer 数据，生成 proposal，并通过受控 API 应用已验证变更。
 - Backend Harness 保持自治；v9 可以做自己的 harness-level evolution，但不作为所有 backend 的公共策略。
@@ -17,7 +18,11 @@
 - `T003`：补齐 metadata / run audit 基础字段（已完成）：agent/run 已支持项目自定义 metadata，为通用 adapter、audit 和未来 evolution 数据底座做准备；最近更新 `2026-04-18`
 - `T004`：Context refs / metrics / evaluation 数据契约（已完成）：run ledger 已具备兼容字段和基础 evaluation hook；最近更新 `2026-04-18`
 - `T005`：Evolution proposal store 与受控 apply/rollback（已完成）：已提供 proposal 存储、查询、审批、apply、rollback 生命周期，不把复杂自进化决策写入 AgentServer Core；最近更新 `2026-04-18`
-- `T006`：验证所有 backend 的工具调用兼容性（已完成）：五个 backend 的 `list_dir` fixture parity 已纳入 `npm test`；standalone AgentServer 已补齐 backend launcher 构建入口，并完成 live smoke；最近更新 `2026-04-18`
+- `T006`：验证所有 backend 的工具调用兼容性（已完成）：六个 backend 的 `list_dir` fixture parity 已纳入 `npm test`；standalone AgentServer 已补齐 backend launcher 构建入口，并完成 live smoke；最近更新 `2026-04-18`
+- `T007`：集成 Hermes Agent backend（已完成）：已拷贝源码并接入 backend catalog、launcher、session runner、fixture parity 和 backend live smoke；最近更新 `2026-04-18`
+- `T008`：补充公共 API 薄文档（已完成）：新增 `docs/public-api.md`，说明 `runTask`、HTTP facade、backend 列表和 capability 查询示例；最近更新 `2026-04-18`
+- `T009`：拆分 Core context 契约与 harness 策略文档（已完成）：新增 `docs/context-core.md`，并将 `docs/context-harness.md` 明确定位为自研/custom backend harness 策略；最近更新 `2026-04-18`
+- `T010`：统一整理项目文档到 `docs/`（已完成）：新增 docs 索引，合并 runtime/backend 文档，任务板保留在根目录，消除过期路径和 backend 数量冲突；最近更新 `2026-04-18`
 
 ---
 
@@ -31,14 +36,14 @@
   - Backend Harness：保持自治，v9 可单独做内部实验。
 
 #### 成功标准
-- `agent-server-architecture.md` 使用三章结构。
+- `docs/architecture.md` 使用三章结构。
 - 文档明确 AgentServer 核心对象只有 `Agent / Session / ContextItem / Run / Artifact`。
 - 文档明确业务差异通过 `metadata` 适配。
 - 文档明确 v9 context design 是 v9 backend 内部 harness 策略。
 - 文档不包含具体 TODO/task。
 
 #### TODO
-- [x] 重写 `agent-server-architecture.md` 为三章结构。
+- [x] 重写 `docs/architecture.md` 为三章结构。
 - [x] 增加 AgentServer Core / Evolution Engine / Backend Harness 三层边界。
 - [x] 把 TODO/task 移到 `PROJECT.md`。
 
@@ -181,7 +186,7 @@
 
 #### TODO
 - [x] 检查 backend catalog 与本机 managed launcher 可用性。
-- [x] 将五个 backend 的 `list_dir` fixture parity 加入 `npm test`。
+- [x] 将六个 backend 的 `list_dir` fixture parity 加入 `npm test`。
 - [x] 增加 `npm run smoke:agent-server:backends` live smoke 入口，launcher 缺失时跳过并说明原因。
 - [x] 补齐 `npm run build:backend-binaries`，生成 `server/backend/bin/openteam_*` managed launchers。
 - [x] 修正 live smoke 的 launcher 检测逻辑，使用 runtime 相同的 `OPENTEAM_BACKEND_BIN_DIR || server/backend/bin` 解析规则。
@@ -194,4 +199,131 @@
 
 #### Takeaway
 - fixture parity 能锁住 AgentServer/Runtime 统一工具事件语义；live smoke 还依赖 managed launcher、模型和 backend 运行环境。standalone AgentServer 必须显式提供 launcher 构建入口，才能复刻 openteam-studio-run 的可用状态。
-- 当前本机已验证五个 backend 都能通过 AgentServer 发起真实 `list_dir` 工具调用并产出标准 tool-call/tool-result 事件。
+- 当前本机已验证六个 backend 都能通过 AgentServer 发起真实 `list_dir` 工具调用并产出标准 tool-call/tool-result 事件。
+
+---
+
+### T007
+
+#### 目标说明
+- 将 `/Applications/workspace/ailab/research/app/hermes-agent` 纳入 AgentServer 的 managed backend 集合。
+- 第一阶段先把 Hermes 源码拷贝到 `server/backend/hermes_agent`，并提供通用 backend 接线。
+- 保持 AgentServer Core 通用，不把 Hermes 的自进化/记忆策略上移到 core。
+
+#### 成功标准
+- `server/backend/hermes_agent` 存在 Hermes 源码，且不包含 `.git`、`venv`、`__pycache__`。
+- backend catalog 支持 `hermes-agent`。
+- runtime supervisor 支持 `hermes-agent` session runner。
+- backend launcher 构建脚本生成 `openteam_hermes_agent`。
+- Hermes 的 `list_dir` fixture parity 纳入 `npm test`。
+- live smoke 能覆盖 `hermes-agent`。
+
+#### TODO
+- [x] 拷贝 Hermes 源码到 `server/backend/hermes_agent`。
+- [x] 排除 `.git`、`venv`、`__pycache__` 和 `.pyc`。
+- [x] 增加 `hermes-agent` backend catalog entry。
+- [x] 增加 launcher 构建入口。
+- [x] 增加 session runner 接线。
+- [x] 增加 `list_dir` fixture parity。
+- [x] 跑 `npm run build` / `npm test`。
+- [x] 跑 backend live smoke。
+- [ ] 后续深化 ACP stdio/native event 双向协议。
+
+#### 异常发现
+- Hermes 是 Python 项目，原生入口偏 CLI/ACP；第一阶段用 AgentServer tool bridge 保证工具调用事件一致，ACP 深集成后续单独推进。
+- 原项目包含本地 `venv` 和缓存，直接整目录拷贝会带来大量无关产物，需要显式排除。
+- AgentServer 和 openteam-studio-run 默认 runtime-supervisor 端口相同会导致跨项目误连；standalone AgentServer 默认端口调整为 `8767`，并在 supervisor health 中暴露 project root。
+
+#### Takeaway
+- Hermes 的自进化、记忆和 skill 策略应该继续留在 Hermes backend/harness 内部；AgentServer 只负责把它作为可选 backend 编排、审计和统一工具事件。
+
+---
+
+### T008
+
+#### 目标说明
+- 给 `openteam-studio-run` 或其他项目一个很薄的公开 API 速查，不需要读内部 runtime 代码就能接入 AgentServer。
+- 明确普通调用只需要改 `agent.backend` 或 `runtime.backend`。
+- 给出 `listSupportedBackends()` 和 capability 查询示例。
+
+#### 成功标准
+- 存在公共 API 文档。
+- 文档包含 in-process `AgentServerService.runTask` 示例。
+- 文档包含 HTTP `POST /api/agent-server/runs` 示例。
+- 文档包含 backend 列表和 capability 查询示例。
+- README/TUTORIAL 能指向公共 API 文档。
+
+#### TODO
+- [x] 新增 `docs/public-api.md`。
+- [x] 更新 README backend 列表和公共 API 链接。
+- [x] 更新 TUTORIAL backend 列表和公共 API 链接。
+- [x] 在设计文档第二章标明通用 run facade 是上层推荐入口。
+
+#### 异常发现
+- README/TUTORIAL 的 backend 列表还没包含 `hermes-agent`。
+- 设计文档第二章仍把 `/autonomous/run` 写成当前推荐入口，需要和已落地的 `/runs` facade 对齐。
+
+#### Takeaway
+- 对外集成面应保持薄而稳定：`runTask` + backend id + metadata + normalized events，backend 深层差异由 capability 和 runtime adapter 吸收。
+
+---
+
+### T009
+
+#### 目标说明
+- 把 AgentServer Core 通用 context 能力和自定义 agent backend 内部 harness 策略拆开。
+- 避免读者误以为 v9 的 prefix/work、stable/dynamic boundary、COMPACTION TAG 是所有 backend 的公共协议。
+
+#### 成功标准
+- 存在一个 Core context 契约文档，说明跨 backend 稳定能力。
+- `docs/context-harness.md` 顶部明确自己是 v9/custom backend harness 策略。
+- 架构文档指向这两个文档，并继续强调 AgentServer Core / Backend Harness 边界。
+
+#### TODO
+- [x] 新增 `docs/context-core.md`。
+- [x] 更新 `docs/context-harness.md` 文档定位。
+- [x] 更新 `docs/architecture.md` 的 v9/context 说明。
+
+#### 异常发现
+- `docs/context-harness.md` 内容很有价值，但混合了 Core 可吸收原则和 v9 内部策略；不拆开会让后续 backend 接入者误判实现义务。
+
+#### Takeaway
+- Core 文档应该讲“所有 backend 都能依赖什么”；harness 文档应该讲“自研 backend 可以如何变聪明”。
+
+---
+
+### T010
+
+#### 目标说明
+- 将项目文档统一收敛到 `docs/` 目录。
+- `PROJECT.md` 保留在根目录作为工程任务板，不移动到 `docs/`。
+- 消除根目录和 server 子目录中重复、过期或冲突的说明。
+- 保留旧位置跳转，避免读者找不到入口。
+
+#### 成功标准
+- `docs/README.md` 成为文档总入口。
+- 公共 API、架构、Core context、harness context、backend runtime、agent server runtime、教程、任务板都有明确归属。
+- 根目录 README 写清楚项目定位、功能、整体介绍和文档导航。
+- 根目录 `PROJECT.md` 保留为工程任务板。
+- 旧位置跳转页不再承载重复正文。
+- 文档中不再出现过期绝对文档链接和 backend 数量冲突。
+
+#### TODO
+- [x] 新增 `docs/README.md` 文档索引。
+- [x] 移动公共 API 文档到 `docs/public-api.md`。
+- [x] 移动教程到 `docs/tutorial.md`。
+- [x] 移动架构文档到 `docs/architecture.md`。
+- [x] 保留工程任务板在根目录 `PROJECT.md`。
+- [x] 移动 Core/v9 context 文档到 `docs/`。
+- [x] 新增 `docs/backend-runtime.md`，替代旧 backend/runtime plan 重复说明。
+- [x] 新增 `docs/agent-server-runtime.md`，替代旧 agent_server README 长文。
+- [x] 将旧位置 README/plan 改为跳转页。
+- [x] 扫描并修正旧文件名、旧路径、backend 数量冲突。
+
+#### 异常发现
+- agent server 目录原说明还保留了旧项目绝对链接和旧回归脚本列表。
+- runtime plan 是从 OpenTeam 迁移来的旧说明，包含大量不属于 standalone AgentServer 的路径。
+- backend 目录原说明的 backend 数量与 Hermes 集成后的六 backend 状态冲突。
+
+#### Takeaway
+- 文档需要和代码一样有单一真相源：主题正文放 `docs/`，旧位置只做导航。

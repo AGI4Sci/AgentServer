@@ -14,6 +14,7 @@ export interface SupervisorHealthResponse {
   service: 'runtime-supervisor';
   pid: number;
   startedAt: string;
+  projectRoot: string;
 }
 
 export interface SupervisorEnsureSessionRequest {
@@ -56,6 +57,7 @@ export interface SupervisorDiagnosticsResponse {
   service: 'runtime-supervisor';
   pid: number;
   startedAt: string;
+  projectRoot: string;
   contracts: BackendModelContract[];
   sessions: WorkerSessionStatus[];
   snapshot: RuntimeSessionSnapshotFile;

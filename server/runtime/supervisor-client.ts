@@ -47,7 +47,7 @@ async function fetchNullableJson<T>(path: string, init?: RequestInit): Promise<T
 async function isSupervisorHealthy(): Promise<boolean> {
   try {
     const health = await fetchJson<SupervisorHealthResponse>('/health');
-    return health.ok === true;
+    return health.ok === true && (!health.projectRoot || resolve(health.projectRoot) === resolve(PROJECT_ROOT));
   } catch {
     return false;
   }

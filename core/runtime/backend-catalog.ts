@@ -2,6 +2,7 @@ export const BACKEND_IDS = [
   'claude-code',
   'claude-code-rust',
   'codex',
+  'hermes-agent',
   'openclaw',
   'zeroclaw',
 ] as const;
@@ -20,7 +21,7 @@ export interface BackendCapabilities {
 export interface BackendDescriptor {
   id: BackendType;
   label: string;
-  family: 'claude-code' | 'codex' | 'openclaw' | 'zeroclaw';
+  family: 'claude-code' | 'codex' | 'hermes' | 'openclaw' | 'zeroclaw';
   executables: readonly string[];
   capabilities: BackendCapabilities;
 }
@@ -59,6 +60,20 @@ export const BACKEND_CATALOG: readonly BackendDescriptor[] = [
     label: 'Codex',
     family: 'codex',
     executables: ['openteam_codex'],
+    capabilities: {
+      persistentSession: true,
+      permissionRequest: false,
+      interrupt: true,
+      toolInputStreaming: false,
+      nativeToolUse: true,
+      managedLauncher: true,
+    },
+  },
+  {
+    id: 'hermes-agent',
+    label: 'Hermes Agent',
+    family: 'hermes',
+    executables: ['openteam_hermes_agent', 'openteam_hermes_agent.cmd'],
     capabilities: {
       persistentSession: true,
       permissionRequest: false,
