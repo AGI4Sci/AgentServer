@@ -1,6 +1,6 @@
 # AgentServer Docs
 
-最后更新：2026-04-18
+最后更新：2026-04-19
 
 这是 AgentServer 的主题文档入口。工程任务板保留在仓库根目录 [`PROJECT.md`](../PROJECT.md)。
 
@@ -12,7 +12,7 @@
    对外接入契约的主要入口。包含 `runTask`、HTTP facade、backend 列表、capability 示例、统一事件和工具原语功能说明。
 
 2. [Architecture](./architecture.md)
-   讲 AgentServer Core / Evolution Engine / Backend Harness 的边界，以及为什么 Core 要保持通用、稳定、简洁。
+   讲 AgentServer Core / Evolution Engine / Backend Harness 的边界，以及 AgentServer 作为多 agent backend 编排层的最终形态。
 
 3. [Core Context Contract](./context-core.md)
    讲所有 backend 都能依赖的 external auditable context 契约。
