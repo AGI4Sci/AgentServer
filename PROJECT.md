@@ -26,6 +26,7 @@
 - 让代码任务可以在一次 request 内复用 backend 的完整能力：agent loop、官方工具事件、thread/session、approval、sandbox 或等价执行策略。
 - 正式路线采用结构化、状态透明的 SDK/API/RPC/app-server/bridge；CLI 只作为 bootstrap、debug、fallback 或 compatibility path。
 - 官方 backend 源码默认保持可替换；adapter 修改优先放在 AgentServer runtime 层，确需 patch 官方源码时必须登记重放线索。
+- 对所有 backend 集成缺口采用同一原则：优先外围 adapter/bridge/env/config/profile 降级，以保留官方原生能力和源码更新复用；当外围成本明显不成比例或会削弱原生 agent 能力时，允许小范围修改官方源码，并记录文件、目的和重放步骤。
 - 保留 `openai-codex` direct provider 和其它历史 backend 的定位为轻量/兼容/实验/兜底路径；强任务优先走首版 strategic backend。
 
 #### 成功标准
@@ -58,6 +59,7 @@
 - [x] 明确 upstream source isolation 原则：官方 backend 源码只读优先，adapter 逻辑默认写在 AgentServer 侧。
 - [x] 新增 upstream override 登记文档，记录必要官方源码 patch 和官方更新后的重放步骤。
 - [x] 明确 provider/auth input 例外原则：优先外围 adapter/env/config 适配；若代价明显不成比例，可做小 upstream patch，但必须在 override 文档登记文件、目的和重放步骤。
+- [x] 将 upstream patch 例外原则扩展为通用 backend 集成规则：所有原生 runtime 接线问题都先评估外围 adapter 与官方源码 patch 的长期成本，允许在外围绕行代价失衡时做小而可重放的源码修改。
 - [x] 新增 strategic agent backend profile registry，区分 current capabilities 与 target capabilities，避免把 CLI bridge 误标成 production-complete backend。
 - [x] 新增 agent backend adapter registry/factory，只暴露已实现 adapter，并通过 profile 显式标注 prototype / production-complete 差异。
 - [x] 实现 Codex app-server adapter 原型，优先使用 app-server JSON-RPC，而不是只 spawn CLI 文本流。

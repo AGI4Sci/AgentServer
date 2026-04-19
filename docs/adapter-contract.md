@@ -69,7 +69,9 @@ type ExecutionBackend = {
 
 1. 使用官方 app-server、SDK、JSON-RPC、stdio RPC、HTTP/WebSocket stream 或本地 runtime API。
 2. 如果官方协议缺少小块机器可读信息，优先在 AgentServer 侧写 bridge / parser / schema mapper。
-3. 如果必须修改官方源码，改动必须尽量小、集中、可重放，并登记到 [Upstream Backend Overrides](./upstream-backend-overrides.md)。
+3. 如果是 provider/auth input、状态读取、工具事件、approval、sandbox、session、abort/resume 或 packaging 等接线问题，先评估外围 adapter/env/config/bridge/profile 降级能否合理解决。
+4. 如果外围适配成本明显不成比例，或会严重损失 backend 原生 agent 能力与状态透明性，可以对官方源码做小 patch。
+5. 如果必须修改官方源码，改动必须尽量小、集中、可重放，并登记到 [Upstream Backend Overrides](./upstream-backend-overrides.md)。
 
 登记信息至少包括：
 
@@ -80,6 +82,8 @@ type ExecutionBackend = {
 - 重新同步官方版本后的重放步骤或检查点。
 
 没有登记的官方源码改动不能被视为 adapter contract 的一部分。adapter 的长期目标是在 AgentServer 自己的 runtime 层吸收差异，让 `server/backend/codex`、`server/backend/gemini` 等目录可以随官方版本更新。
+
+这个取舍不是单纯追求“零 upstream patch”。更高优先级是完整复用 backend 的原生 agent 能力，同时保持源码更新路径清晰：能在外围适配就放外围；外围代价失衡时，允许进入官方源码，但必须把改动变成可审计、可重放的工程事实。
 
 ## 3. Backend Strength Policy
 

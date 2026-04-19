@@ -9,7 +9,8 @@
 - 官方 backend 目录默认视为可替换 upstream source，可随官方版本重新 clone、pull 或覆盖。
 - 首选接入方式是官方 app-server、SDK、JSON-RPC、stdio RPC、HTTP/WebSocket event stream、本地 runtime API 或 schema-backed bridge。
 - 不把 AgentServer adapter 逻辑写进官方源码，除非没有其它稳定入口。
-- provider/auth input 这类原生 runtime 接线问题仍优先在 AgentServer adapter 或环境配置层解决；如果外围适配需要付出明显不成比例的复杂度，允许对官方源码做小 patch，但必须登记修改文件、目的和重放步骤。
+- provider/auth input、结构化状态、工具事件、approval、sandbox metadata、session id、abort/resume、packaging 等原生 runtime 接线问题，仍优先在 AgentServer adapter、bridge、环境变量、配置文件或 capability/profile 降级层解决。
+- 如果外围适配需要付出明显不成比例的复杂度，或者外围绕行会明显削弱 backend 原生 agent loop、工具调用、上下文管理、sandbox/approval 或状态透明性，允许对官方源码做小 patch。
 - 必须修改官方源码时，改动要小、集中、可重放，并在本文档登记。
 - 重新同步官方版本后，先查看本文档，再决定是否需要重放 patch。
 
@@ -27,6 +28,7 @@
 - 官方 runtime 不暴露必要 provider/auth input，导致无法通过环境变量、配置文件、SDK option、app-server request 参数或 bridge 注入完成接线。
 - 官方 protocol 缺少必要状态、审批、工具事件、sandbox metadata、abort/resume 或 session id，且无法从现有事件/状态稳定推导。
 - 官方 build 或 packaging 问题阻塞 production artifact，且 dev fallback 不能满足目标部署。
+- 外围 adapter 为了绕过缺口需要复制大量官方内部逻辑，导致后续官方更新更难复用，或更容易损失原生 agent 能力。
 
 每次 patch 前仍应先确认是否可以通过 AgentServer 侧 adapter wrapper、preflight、env override、profile/capability 降级或 readiness 文档解决。
 

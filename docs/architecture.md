@@ -74,7 +74,10 @@ request
    对 Codex/Claude Code/Gemini 这类完整 agent backend，AgentServer 不应只把它们当普通 model provider，也不应只把它们当 CLI 文本程序调用。正式 agent backend 必须通过结构化 transport 复用其 agent loop、工具事件、thread/session、approval、sandbox 和可查询状态。
 
 3. **官方 backend 代码默认保持可替换。**
-   Codex、Claude Code、Gemini 等 upstream checkout 应被视为会频繁更新的外部源码。AgentServer 的 adapter、bridge、schema mapping、capability policy 默认写在 AgentServer 自己的 runtime/docs/tests 中；除非没有公开 SDK/API/RPC/app-server 能力可用，否则不修改官方源码。确需修改官方源码时，必须在 `docs/upstream-backend-overrides.md` 记录 backend、upstream 版本、修改文件、修改目的和重放步骤，避免每次同步官方版本后重复摸索。
+   Codex、Claude Code、Gemini 等 upstream checkout 应被视为会频繁更新的外部源码。AgentServer 的 adapter、bridge、schema mapping、capability policy 默认写在 AgentServer 自己的 runtime/docs/tests 中；优先通过外围 adapter 充分复用官方原生 agent 能力，并让后续官方源码更新可以直接同步。
+
+4. **允许有记录的小 upstream patch，但不能把 patch 当常态。**
+   当 provider/auth input、结构化状态、工具事件、approval、sandbox metadata、session id、abort/resume、packaging 等问题无法通过 SDK/API/RPC/app-server、环境变量、配置、bridge 或 capability 降级合理解决，且外围适配复杂度明显不成比例时，可以修改官方源码。修改必须小、集中、可重放，并在 `docs/upstream-backend-overrides.md` 记录 backend、upstream 版本、修改文件、修改目的和重放步骤，避免每次同步官方版本后重复摸索。
 
 ### 1.3 三层策略边界
 
