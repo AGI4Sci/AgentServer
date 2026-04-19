@@ -16,6 +16,7 @@ import type {
 } from '../../agent_server/types.js';
 import { runSessionViaSupervisor } from '../supervisor-session-runner.js';
 import type { SessionStreamEvent } from '../session-types.js';
+import { resolveBackendModelSelection } from '../backend-model-contract.js';
 import { resolveAdapterLlmEndpointOverride } from './llm-endpoint-override.js';
 
 type ClaudeCodeSessionState = BackendReadableState & {
@@ -79,6 +80,10 @@ export class ClaudeCodeBridgeAgentBackendAdapter implements AgentBackendAdapter 
     state.lastEventAt = nowIso();
 
     const events: SessionStreamEvent[] = [];
+    const modelSelection = resolveBackendModelSelection(this.backendId, {
+      ...(input.runtimeModel || {}),
+      llmEndpoint: input.runtimeModel?.llmEndpoint || resolveAdapterLlmEndpointOverride(),
+    });
     const output = await runSessionViaSupervisor(
       this.backendId,
       {
@@ -94,7 +99,11 @@ export class ClaudeCodeBridgeAgentBackendAdapter implements AgentBackendAdapter 
         sessionKey: input.sessionRef.id,
         sessionMode: input.sessionRef.scope === 'session' ? 'persistent' : 'ephemeral',
         persistentKey: input.sessionRef.id,
-        llmEndpoint: resolveAdapterLlmEndpointOverride(),
+        model: modelSelection.runtimeModel || undefined,
+        modelProvider: modelSelection.modelProvider || undefined,
+        modelName: modelSelection.modelName || undefined,
+        llmEndpoint: input.runtimeModel?.llmEndpoint || resolveAdapterLlmEndpointOverride(),
+        localDevPolicy: input.localDevPolicy,
       },
       {
         onEvent: (event) => {

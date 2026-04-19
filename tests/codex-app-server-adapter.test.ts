@@ -25,6 +25,124 @@ test('codex app-server adapter declares structured production-target capabilitie
   assert.equal(capabilities.statusTransparency, 'full');
 });
 
+test('codex app-server adapter defaults to highest permissions and honors per-request model config', async () => {
+  await withModelEnv({
+    OPENTEAM_CODEX_FORCE_OPENAI_PROVIDER: '1',
+  }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'agent-server-codex-policy-'));
+  const fakeServerPath = join(dir, 'fake-codex-policy-app-server.mjs');
+  await writeFile(fakeServerPath, `
+import { createInterface } from 'node:readline';
+
+const rl = createInterface({ input: process.stdin });
+const write = (message) => process.stdout.write(JSON.stringify(message) + '\\n');
+
+rl.on('line', (line) => {
+  const message = JSON.parse(line);
+  if (message.method === 'initialize') {
+    write({ id: message.id, result: {} });
+    return;
+  }
+  if (message.method === 'initialized') {
+    return;
+  }
+  if (message.method === 'thread/start') {
+    if (message.params?.approvalPolicy !== 'never' || message.params?.sandbox !== 'danger-full-access') {
+      write({ id: message.id, error: { message: 'thread/start did not request highest permissions' } });
+      return;
+    }
+    write({ id: message.id, result: { thread: { id: 'thread-1' } } });
+    return;
+  }
+  if (message.method === 'turn/start') {
+    const text = message.params?.input?.[0]?.text || '';
+    if (message.params?.approvalPolicy !== 'never' || message.params?.sandboxPolicy?.type !== 'dangerFullAccess') {
+      write({ id: message.id, error: { message: 'turn/start did not request highest permissions' } });
+      return;
+    }
+    if (message.params?.model !== 'gpt-request' || message.params?.modelProvider !== 'openai') {
+      write({ id: message.id, error: { message: 'turn/start did not honor request model config' } });
+      return;
+    }
+    if (!text.includes('Expected artifacts: structure-summary') || !text.includes('native_tool_first=true')) {
+      write({ id: message.id, error: { message: 'missing native artifact execution guidance' } });
+      return;
+    }
+    write({ id: message.id, result: { turn: { id: 'turn-1' } } });
+    write({ method: 'item/agentMessage/delta', params: { threadId: 'thread-1', turnId: 'turn-1', itemId: 'msg-1', delta: 'policy-ok' } });
+    write({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } } });
+  }
+});
+`, 'utf8');
+
+  const adapter = new CodexAppServerAgentBackendAdapter({
+    command: process.execPath,
+    args: [fakeServerPath],
+  });
+  const sessionRef = await adapter.startSession({
+    agentServerSessionId: 'session-1',
+    backend: 'codex',
+    workspace: dir,
+    scope: 'stage',
+    runtimeModel: {
+      modelProvider: 'openai',
+      modelName: 'gpt-request',
+    },
+    executionPolicy: {
+      approvalPolicy: 'never',
+      sandbox: 'danger-full-access',
+    },
+  });
+
+  const events = [];
+  for await (const event of adapter.runTurn({
+    sessionRef,
+    runtimeModel: {
+      modelProvider: 'openai',
+      modelName: 'gpt-request',
+    },
+    executionPolicy: {
+      approvalPolicy: 'never',
+      sandbox: 'danger-full-access',
+    },
+    handoff: {
+      runId: 'run-1',
+      stageId: 'stage-1',
+      stageType: 'implement',
+      goal: 'download structure',
+      userRequest: 'download structure',
+      targetBackend: 'codex',
+      stageInstructions: 'run a policy turn',
+      canonicalContext: [],
+      priorStageSummaries: [],
+      constraints: [],
+      workspaceFacts: {
+        root: dir,
+        dirtyFiles: [],
+      },
+      backendRunRecords: [],
+      openQuestions: [],
+      metadata: {
+        input: {
+          expectedArtifacts: ['structure-summary'],
+          nativeTools: ['PDB'],
+        },
+        runtime: {
+          nativeToolFirst: true,
+        },
+      },
+    },
+  })) {
+    events.push(event);
+  }
+  await adapter.dispose({ sessionRef });
+
+  const stageResult = events.find((event) => event.type === 'stage-result');
+  assert.equal(stageResult?.result.status, 'completed');
+  assert.equal(stageResult?.result.finalText, 'policy-ok');
+  });
+});
+
 test('codex app-server adapter surfaces and auto-approves server-side approval requests', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'agent-server-codex-fake-'));
   const fakeServerPath = join(dir, 'fake-codex-app-server.mjs');
@@ -373,6 +491,7 @@ async function withModelEnv(values: Record<string, string>, fn: () => Promise<vo
     'AGENT_SERVER_MODEL_BASE_URL',
     'AGENT_SERVER_MODEL_API_KEY',
     'AGENT_SERVER_CODEX_MODEL',
+    'OPENTEAM_CODEX_FORCE_OPENAI_PROVIDER',
   ];
   const snapshot = new Map<string, string | undefined>();
   for (const key of keys) {

@@ -110,7 +110,8 @@ export class SupervisorCompatAgentBackendAdapter implements AgentBackendAdapter 
     state.lastEventAt = nowIso();
 
     const modelSelection = resolveBackendModelSelection(this.backendId, {
-      llmEndpoint: resolveAdapterLlmEndpointOverride(),
+      ...(input.runtimeModel || {}),
+      llmEndpoint: input.runtimeModel?.llmEndpoint || resolveAdapterLlmEndpointOverride(),
     });
     const events: SessionStreamEvent[] = [];
     const output = await runSessionViaSupervisor(
@@ -131,7 +132,8 @@ export class SupervisorCompatAgentBackendAdapter implements AgentBackendAdapter 
         model: modelSelection.runtimeModel || undefined,
         modelProvider: modelSelection.modelProvider || undefined,
         modelName: modelSelection.modelName || undefined,
-        llmEndpoint: resolveAdapterLlmEndpointOverride(),
+        llmEndpoint: input.runtimeModel?.llmEndpoint || resolveAdapterLlmEndpointOverride(),
+        localDevPolicy: input.localDevPolicy,
       },
       {
         onEvent: (event) => {

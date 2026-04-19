@@ -79,9 +79,10 @@ export class GeminiSdkAgentBackendAdapter implements AgentBackendAdapter {
     applyGeminiAuthEnvAliases();
     const { GeminiCliAgent } = await importGeminiSdk(this.options.sdkModule);
     const modelRuntime = resolveModelRuntimeConnection({
-      model: this.options.model || process.env.AGENT_SERVER_GEMINI_MODEL,
+      ...(input.runtimeModel || {}),
+      model: input.runtimeModel?.model || this.options.model || process.env.AGENT_SERVER_GEMINI_MODEL,
     });
-    const sdkModel = this.options.model || process.env.AGENT_SERVER_GEMINI_MODEL || (
+    const sdkModel = input.runtimeModel?.modelName || input.runtimeModel?.model || this.options.model || process.env.AGENT_SERVER_GEMINI_MODEL || (
       isGeminiNativeProvider(modelRuntime.provider) ? modelRuntime.modelName || undefined : undefined
     );
     const agent = new GeminiCliAgent({

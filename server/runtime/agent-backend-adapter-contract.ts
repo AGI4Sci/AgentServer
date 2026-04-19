@@ -10,7 +10,13 @@ import type {
   BackendSessionRef,
   BackendStageResult,
 } from '../agent_server/types.js';
-import type { SessionStreamEvent } from './session-types.js';
+import type { RuntimeModelInput } from './model-spec.js';
+import type { LocalDevPolicyHint, SessionStreamEvent } from './session-types.js';
+
+export interface BackendExecutionPolicy {
+  approvalPolicy: 'never' | 'on-request';
+  sandbox: 'danger-full-access' | 'workspace-write' | 'read-only';
+}
 
 export interface AgentBackendCapabilities {
   nativeLoop: boolean;
@@ -34,12 +40,18 @@ export interface StartBackendSessionInput {
   backend: AgentBackendId;
   workspace: string;
   scope: 'session' | 'stage';
+  runtimeModel?: RuntimeModelInput;
+  localDevPolicy?: LocalDevPolicyHint;
+  executionPolicy?: BackendExecutionPolicy;
   metadata?: Record<string, unknown>;
 }
 
 export interface RunBackendTurnInput {
   sessionRef: BackendSessionRef;
   handoff: BackendHandoffPacket;
+  runtimeModel?: RuntimeModelInput;
+  localDevPolicy?: LocalDevPolicyHint;
+  executionPolicy?: BackendExecutionPolicy;
   abortSignal?: AbortSignal;
 }
 

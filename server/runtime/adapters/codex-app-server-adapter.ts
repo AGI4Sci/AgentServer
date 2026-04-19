@@ -16,6 +16,7 @@ import type {
   BackendSessionRef,
   BackendStageResult,
 } from '../../agent_server/types.js';
+import type { RuntimeModelInput } from '../model-spec.js';
 import type { SessionStreamEvent } from '../session-types.js';
 import { resolveCodexRuntimeModelSelection } from '../codex-model-runtime.js';
 import { resolveModelRuntimeConnection } from '../model-runtime-resolver.js';
@@ -35,6 +36,8 @@ type CodexSessionState = BackendReadableState & {
   client: CodexJsonRpcClient;
   workspace: string;
   threadId: string;
+  runtimeModel?: RuntimeModelInput;
+  executionPolicy?: StartBackendSessionInput['executionPolicy'];
   activeTurnId?: string;
   disposed?: boolean;
 };
@@ -79,10 +82,10 @@ export class CodexAppServerAgentBackendAdapter implements AgentBackendAdapter {
   }
 
   async startSession(input: StartBackendSessionInput): Promise<BackendSessionRef> {
-    if (codexRuntimeSelection(this.options).route === 'custom-provider') {
+    if (codexRuntimeSelection(this.options, input.runtimeModel).route === 'custom-provider') {
       await ensureRuntimeSupervisor();
     }
-    const client = CodexJsonRpcClient.spawn(this.options);
+    const client = CodexJsonRpcClient.spawn(this.options, input.runtimeModel);
     await client.request('initialize', {
       clientInfo: {
         name: this.options.clientName || 'agent_server',
@@ -100,6 +103,8 @@ export class CodexAppServerAgentBackendAdapter implements AgentBackendAdapter {
       ephemeral: input.scope === 'stage',
       experimentalRawEvents: false,
       persistExtendedHistory: true,
+      approvalPolicy: input.executionPolicy?.approvalPolicy || 'never',
+      sandbox: input.executionPolicy?.sandbox || 'danger-full-access',
     });
     const threadId = readNestedString(startResponse, ['thread', 'id']);
     if (!threadId) {
@@ -123,6 +128,8 @@ export class CodexAppServerAgentBackendAdapter implements AgentBackendAdapter {
       client,
       workspace: input.workspace,
       threadId,
+      runtimeModel: input.runtimeModel,
+      executionPolicy: input.executionPolicy,
       status: 'idle',
       lastEventAt: nowIso(),
       resumable: true,
@@ -164,7 +171,9 @@ export class CodexAppServerAgentBackendAdapter implements AgentBackendAdapter {
       const turnResponse = await state.client.request('turn/start', {
         threadId: state.threadId,
         cwd: state.workspace,
-        ...codexTurnOverrides(this.options),
+        approvalPolicy: input.executionPolicy?.approvalPolicy || state.executionPolicy?.approvalPolicy || 'never',
+        sandboxPolicy: codexSandboxPolicy(input.executionPolicy?.sandbox || state.executionPolicy?.sandbox || 'danger-full-access'),
+        ...codexTurnOverrides(this.options, input.runtimeModel || state.runtimeModel),
         input: [
           {
             type: 'text',
@@ -337,10 +346,10 @@ class CodexJsonRpcClient {
     });
   }
 
-  static spawn(options: CodexAppServerAdapterOptions): CodexJsonRpcClient {
+  static spawn(options: CodexAppServerAdapterOptions, runtimeModel?: RuntimeModelInput): CodexJsonRpcClient {
     const command = options.command || process.env.AGENT_SERVER_CODEX_APP_SERVER_COMMAND || 'codex';
     const args = [...(options.args || ['app-server', '--listen', 'stdio://'])];
-    args.push(...codexSpawnConfigArgs(options));
+    args.push(...codexSpawnConfigArgs(options, runtimeModel));
     const child = spawn(command, args, {
       env: {
         ...process.env,
@@ -497,35 +506,70 @@ class AsyncNotificationQueue implements AsyncIterable<JsonRpcMessage> {
 function renderCodexTurnInput(input: RunBackendTurnInput): string {
   return [
     input.handoff.stageInstructions,
+    renderNativeExecutionRequirements(input),
     '',
     'AgentServer handoff packet:',
     JSON.stringify(input.handoff, null, 2),
   ].join('\n');
 }
 
-function codexSpawnConfigArgs(options: CodexAppServerAdapterOptions): string[] {
-  return codexRuntimeSelection(options).configArgs;
+function renderNativeExecutionRequirements(input: RunBackendTurnInput): string {
+  const expectedArtifacts = readMetadataArray(input.handoff.metadata, ['input', 'expectedArtifacts']);
+  const nativeTools = readMetadataArray(input.handoff.metadata, ['input', 'nativeTools']);
+  const nativeToolFirst = readMetadataBoolean(input.handoff.metadata, ['runtime', 'nativeToolFirst'])
+    || readMetadataBoolean(input.handoff.metadata, ['input', 'nativeToolFirst'])
+    || nativeTools.length > 0
+    || expectedArtifacts.length > 0;
+  return [
+    '',
+    'AgentServer execution policy:',
+    `- approval_policy=${input.executionPolicy?.approvalPolicy || 'never'}`,
+    `- sandbox=${input.executionPolicy?.sandbox || 'danger-full-access'}`,
+    '- native_tool_first=true: use the backend native tools/shell/network/file APIs when the task depends on current external data, downloads, verification, or workspace artifacts.',
+    '- Do not answer from memory when a concrete artifact or external lookup is requested; verify with native tools and write the resulting files into the workspace when applicable.',
+    ...(nativeToolFirst ? ['- The caller requested native-tool-first behavior; keep AgentServer tools as fallback only.'] : []),
+    ...(nativeTools.length ? [`- Requested native tools: ${nativeTools.join(', ')}`] : []),
+    ...(expectedArtifacts.length ? [`- Expected artifacts: ${expectedArtifacts.join(', ')}. Include produced file paths or clear failure reasons in the final response.`] : []),
+  ].join('\n');
 }
 
-function codexRuntimeSelection(options: CodexAppServerAdapterOptions) {
+function codexSpawnConfigArgs(options: CodexAppServerAdapterOptions, runtimeModel?: RuntimeModelInput): string[] {
+  return codexRuntimeSelection(options, runtimeModel).configArgs;
+}
+
+function codexRuntimeSelection(options: CodexAppServerAdapterOptions, runtimeModel?: RuntimeModelInput) {
   const modelRuntime = resolveModelRuntimeConnection({
-    model: options.model || process.env.AGENT_SERVER_CODEX_MODEL?.trim(),
+    ...(runtimeModel || {}),
+    model: runtimeModel?.model || options.model || process.env.AGENT_SERVER_CODEX_MODEL?.trim(),
   });
   return resolveCodexRuntimeModelSelection({
     connection: modelRuntime,
-    input: { model: options.model || null },
+    input: {
+      model: runtimeModel?.model || options.model || null,
+      modelName: runtimeModel?.modelName || null,
+    },
     explicitCodexModel: options.model || process.env.AGENT_SERVER_CODEX_MODEL,
   });
 }
 
-function codexTurnOverrides(options: CodexAppServerAdapterOptions): Record<string, string> {
-  const selection = codexRuntimeSelection(options);
+function codexTurnOverrides(options: CodexAppServerAdapterOptions, runtimeModel?: RuntimeModelInput): Record<string, string> {
+  const selection = codexRuntimeSelection(options, runtimeModel);
   const effort = options.effort || process.env.AGENT_SERVER_CODEX_EFFORT?.trim();
   return {
     ...(selection.model ? { model: selection.model } : {}),
     ...(selection.modelProvider ? { modelProvider: selection.modelProvider } : {}),
     ...(effort ? { effort } : {}),
   };
+}
+
+function codexSandboxPolicy(sandbox: string): Record<string, unknown> {
+  if (sandbox === 'danger-full-access') {
+    return { type: 'dangerFullAccess' };
+  }
+  if (sandbox === 'workspace-write') {
+    return { type: 'workspaceWrite' };
+  }
+  return { type: 'readOnly' };
 }
 
 function appendDiagnostic(message: string, stderrSummary: string): string {
@@ -748,6 +792,30 @@ function codexErrorDetail(params: unknown): string | null {
     || readString(params, 'message')
     || readNestedString(params, ['turn', 'error', 'message'])
     || null;
+}
+
+function readMetadataArray(metadata: Record<string, unknown> | undefined, path: string[]): string[] {
+  let current: unknown = metadata;
+  for (const key of path) {
+    if (!isRecord(current)) {
+      return [];
+    }
+    current = current[key];
+  }
+  return Array.isArray(current)
+    ? current.map((item) => String(item)).filter(Boolean)
+    : [];
+}
+
+function readMetadataBoolean(metadata: Record<string, unknown> | undefined, path: string[]): boolean {
+  let current: unknown = metadata;
+  for (const key of path) {
+    if (!isRecord(current)) {
+      return false;
+    }
+    current = current[key];
+  }
+  return current === true;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

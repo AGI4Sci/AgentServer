@@ -3216,6 +3216,7 @@ export class AgentServerService {
     message: string;
     executionContext: string;
     handoffPacket: BackendHandoffPacket;
+    runtimeModel?: Pick<AgentMessageRequest, 'model' | 'modelProvider' | 'modelName' | 'llmEndpoint'>;
     localDevPolicy?: AgentMessageRequest['localDevPolicy'];
     emitEvent: (event: SessionStreamEvent) => void;
   }): Promise<{
@@ -3229,24 +3230,58 @@ export class AgentServerService {
     let adapterStageResult: BackendStageResult | undefined;
     let output: SessionOutput | undefined;
     const textParts: string[] = [];
+    const executionPolicy = {
+      approvalPolicy: 'never' as const,
+      sandbox: 'danger-full-access' as const,
+    };
+    let lastBackendEventAt = Date.now();
+    let heartbeat: NodeJS.Timeout | undefined;
     try {
+      input.emitEvent({
+        type: 'status',
+        stageId: input.handoffPacket.stageId,
+        status: 'starting',
+        message: `${input.backend} agent backend starting with native tools and highest local permissions.`,
+      });
       sessionRef = await adapter.startSession({
         agentServerSessionId: `${input.agent.id}:${input.session.id}`,
         backend: input.backend,
         workspace: input.agent.workingDirectory,
         scope: 'stage',
+        runtimeModel: input.runtimeModel,
+        localDevPolicy: input.localDevPolicy,
+        executionPolicy,
         metadata: {
           runId: input.handoffPacket.runId,
           stageId: input.handoffPacket.stageId,
           agentId: input.agent.id,
           agentServerSessionId: input.session.id,
+          executionPolicy,
         },
       });
+
+      heartbeat = setInterval(() => {
+        if (Date.now() - lastBackendEventAt < 10_000) {
+          return;
+        }
+        lastBackendEventAt = Date.now();
+        input.emitEvent({
+          type: 'status',
+          stageId: input.handoffPacket.stageId,
+          status: 'running',
+          message: `${input.backend} agent backend is still running through its native loop.`,
+        });
+      }, 10_000);
+      heartbeat.unref?.();
 
       for await (const event of adapter.runTurn({
         sessionRef,
         handoff: input.handoffPacket,
+        runtimeModel: input.runtimeModel,
+        localDevPolicy: input.localDevPolicy,
+        executionPolicy,
       })) {
+        lastBackendEventAt = Date.now();
         if (event.type === 'stage-result') {
           adapterStageResult = event.result;
           continue;
@@ -3282,6 +3317,9 @@ export class AgentServerService {
         executionPath: 'agent_backend_adapter',
       };
     } finally {
+      if (heartbeat) {
+        clearInterval(heartbeat);
+      }
       if (sessionRef) {
         await adapter.dispose({ sessionRef, reason: 'single stage execution finished' }).catch((error) => {
           console.warn('[agent-server] adapter dispose failed:', error);

@@ -334,15 +334,15 @@ function maybeEmitTextDelta(
   });
 }
 
-function buildPermissionDenyResponse(permissionId: string, toolUseId?: string): string {
+function buildPermissionAllowResponse(permissionId: string, toolUseId?: string): string {
   return JSON.stringify({
     type: 'control_response',
     response: {
       request_id: permissionId,
       subtype: 'success',
       response: {
-        behavior: 'deny',
-        message: 'OpenTeam permission bridge is not wired yet, so this request was denied by the runtime adapter.',
+        behavior: 'allow',
+        message: 'AgentServer auto-approved this tool request for the current session.',
         ...(toolUseId ? { toolUseID: toolUseId } : {}),
       },
     },
@@ -913,7 +913,7 @@ export class ClaudeCodeTeamWorker {
           detail: typeof inner.decision_reason === 'string' ? inner.decision_reason : undefined,
           raw: payload,
         });
-        session.child?.stdin.write(buildPermissionDenyResponse(permissionId, typeof inner.tool_use_id === 'string' ? inner.tool_use_id : undefined) + '\n');
+        session.child?.stdin.write(buildPermissionAllowResponse(permissionId, typeof inner.tool_use_id === 'string' ? inner.tool_use_id : undefined) + '\n');
       }
       return;
     }
