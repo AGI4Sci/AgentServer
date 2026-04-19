@@ -5,7 +5,19 @@ type Step = {
   command: string;
   args: string[];
   env?: NodeJS.ProcessEnv;
-  skipAfterFailure?: boolean;
+};
+
+type BackendPlan = {
+  backend: StrategicBackend;
+  preflight: Step;
+  liveSmoke: Step;
+};
+
+type StepResult = {
+  backend: StrategicBackend;
+  name: string;
+  status: 'passed' | 'failed' | 'skipped';
+  code?: number;
 };
 
 const STRATEGIC_BACKENDS = ['codex', 'claude-code', 'gemini', 'self-hosted-agent'] as const;
@@ -16,77 +28,59 @@ const baseEnv = {
   AGENT_SERVER_CODEX_MODEL: process.env.AGENT_SERVER_CODEX_MODEL || 'gpt-5.4',
 };
 const selectedBackends = parseSelectedBackends(process.env.AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS);
-const liveSmokeBackends = selectedBackends.filter((backend) => backend !== 'codex');
 const DRY_RUN = process.env.AGENT_SERVER_ADAPTER_READINESS_DRY_RUN === '1';
 
-const steps: Step[] = [
-  {
-    name: 'strict preflight',
-    command: 'npm',
-    args: ['run', 'check:agent-backend-adapters:strict'],
-    skipAfterFailure: true,
-  },
-  ...(selectedBackends.includes('codex')
-    ? [{
-        name: 'Codex isolated live smoke',
-        command: 'npm',
-        args: ['run', 'smoke:agent-backend-adapters:codex-isolated'],
-      }]
-    : []),
-  ...(liveSmokeBackends.length > 0
-    ? [{
-        name: selectedBackends.includes('codex')
-          ? `remaining selected backend live smoke (${liveSmokeBackends.join(',')})`
-          : `selected strategic backend live smoke (${liveSmokeBackends.join(',')})`,
-        command: 'npm',
-        args: ['run', 'smoke:agent-backend-adapters'],
-        env: {
-          AGENT_SERVER_LIVE_ADAPTER_SMOKE: '1',
-          AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS: liveSmokeBackends.join(','),
-        },
-      }]
-    : []),
-];
-
-const results: Array<{ name: string; status: 'passed' | 'failed' | 'skipped'; code?: number }> = [];
-let shouldSkipRemaining = false;
+const plans = selectedBackends.map(createBackendPlan);
+const results: StepResult[] = [];
 
 console.log(`[agent-backend-readiness] selectedBackends=${selectedBackends.join(',')}`);
 
 if (DRY_RUN) {
   console.log('[agent-backend-readiness] dryRun=true');
-  for (const step of steps) {
-    console.log(`PLAN ${step.name}: ${step.command} ${step.args.join(' ')}`);
-    if (step.env?.AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS) {
-      console.log(`PLAN_ENV ${step.name}: AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS=${step.env.AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS}`);
-    }
+  for (const plan of plans) {
+    printPlanStep(plan.preflight);
+    printPlanStep(plan.liveSmoke);
   }
   process.exit(0);
 }
 
-for (const step of steps) {
-  if (shouldSkipRemaining) {
-    results.push({ name: step.name, status: 'skipped' });
+for (const plan of plans) {
+  console.log(`\n[agent-backend-readiness] ${plan.preflight.name}`);
+  const preflightCode = await runStep(plan.preflight);
+  if (preflightCode !== 0) {
+    results.push({
+      backend: plan.backend,
+      name: plan.preflight.name,
+      status: 'failed',
+      code: preflightCode,
+    });
+    results.push({
+      backend: plan.backend,
+      name: plan.liveSmoke.name,
+      status: 'skipped',
+    });
     continue;
   }
-  console.log(`\n[agent-backend-readiness] ${step.name}`);
-  const code = await run(step.command, step.args, {
-    ...baseEnv,
-    ...(step.env || {}),
+  results.push({
+    backend: plan.backend,
+    name: plan.preflight.name,
+    status: 'passed',
+    code: preflightCode,
   });
-  if (code === 0) {
-    results.push({ name: step.name, status: 'passed', code });
-    continue;
-  }
-  results.push({ name: step.name, status: 'failed', code });
-  if (step.skipAfterFailure) {
-    shouldSkipRemaining = true;
-  }
+
+  console.log(`\n[agent-backend-readiness] ${plan.liveSmoke.name}`);
+  const liveSmokeCode = await runStep(plan.liveSmoke);
+  results.push({
+    backend: plan.backend,
+    name: plan.liveSmoke.name,
+    status: liveSmokeCode === 0 ? 'passed' : 'failed',
+    code: liveSmokeCode,
+  });
 }
 
 console.log('\n[agent-backend-readiness] summary');
 for (const result of results) {
-  console.log(`${result.status.toUpperCase()} ${result.name}${result.code === undefined ? '' : ` code=${result.code}`}`);
+  console.log(`${result.status.toUpperCase()} ${result.backend} ${result.name}${result.code === undefined ? '' : ` code=${result.code}`}`);
 }
 
 const failed = results.filter((result) => result.status === 'failed');
@@ -98,6 +92,49 @@ if (failed.length > 0) {
     'Common remaining setup: provide an OpenAI-compatible endpoint for Claude/self-hosted adapters and one Gemini/Google auth source.',
   ].join('\n'));
   process.exitCode = 1;
+}
+
+function createBackendPlan(backend: StrategicBackend): BackendPlan {
+  return {
+    backend,
+    preflight: {
+      name: `${backend} strict preflight`,
+      command: 'npm',
+      args: ['run', 'check:agent-backend-adapters:strict'],
+      env: {
+        AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS: backend,
+      },
+    },
+    liveSmoke: backend === 'codex'
+      ? {
+          name: 'codex isolated live smoke',
+          command: 'npm',
+          args: ['run', 'smoke:agent-backend-adapters:codex-isolated'],
+        }
+      : {
+          name: `${backend} live smoke`,
+          command: 'npm',
+          args: ['run', 'smoke:agent-backend-adapters'],
+          env: {
+            AGENT_SERVER_LIVE_ADAPTER_SMOKE: '1',
+            AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS: backend,
+          },
+        },
+  };
+}
+
+function printPlanStep(step: Step): void {
+  console.log(`PLAN ${step.name}: ${step.command} ${step.args.join(' ')}`);
+  if (step.env?.AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS) {
+    console.log(`PLAN_ENV ${step.name}: AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS=${step.env.AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS}`);
+  }
+}
+
+function runStep(step: Step): Promise<number> {
+  return run(step.command, step.args, {
+    ...baseEnv,
+    ...(step.env || {}),
+  });
 }
 
 function run(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<number> {
