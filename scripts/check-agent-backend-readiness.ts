@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 type Step = {
@@ -24,8 +24,9 @@ type StepResult = {
 
 const STRATEGIC_BACKENDS = ['codex', 'claude-code', 'gemini', 'self-hosted-agent'] as const;
 type StrategicBackend = typeof STRATEGIC_BACKENDS[number];
+const DEFAULT_READINESS_ENV_FILE = '.agent-backend-readiness.local.env';
 
-const loadedEnvFile = loadReadinessEnvFile(process.env.AGENT_SERVER_ADAPTER_READINESS_ENV_FILE);
+const loadedEnvFile = loadReadinessEnvFile(resolveReadinessEnvFile(process.env.AGENT_SERVER_ADAPTER_READINESS_ENV_FILE));
 const baseEnv = {
   ...process.env,
   AGENT_SERVER_CODEX_MODEL: process.env.AGENT_SERVER_CODEX_MODEL || 'gpt-5.4',
@@ -175,6 +176,14 @@ function parseSelectedBackends(value: string | undefined): StrategicBackend[] {
     throw new Error(`Unknown strategic backend(s) in AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS: ${invalid.join(', ')}`);
   }
   return [...new Set(parsed)] as StrategicBackend[];
+}
+
+function resolveReadinessEnvFile(value: string | undefined): string | undefined {
+  const explicitPath = value?.trim();
+  if (explicitPath) {
+    return explicitPath;
+  }
+  return existsSync(DEFAULT_READINESS_ENV_FILE) ? DEFAULT_READINESS_ENV_FILE : undefined;
 }
 
 function loadReadinessEnvFile(value: string | undefined): { path: string; loaded: number; skippedExisting: number } | undefined {
