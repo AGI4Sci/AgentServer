@@ -163,6 +163,16 @@ function normalizeChatContent(content: unknown): string | JsonRecord[] {
   return parts;
 }
 
+function normalizeChatRole(role: unknown): string {
+  if (role === 'system' || role === 'assistant' || role === 'user' || role === 'tool' || role === 'function') {
+    return role;
+  }
+  if (role === 'developer') {
+    return 'system';
+  }
+  return 'user';
+}
+
 function translateResponsesTools(tools: unknown): JsonRecord[] | undefined {
   if (!Array.isArray(tools)) {
     return undefined;
@@ -207,7 +217,7 @@ function appendInputItems(messages: JsonRecord[], input: unknown): void {
     const record = item as JsonRecord;
     if (record.type === 'message') {
       messages.push({
-        role: typeof record.role === 'string' ? record.role : 'user',
+        role: normalizeChatRole(record.role),
         content: normalizeChatContent(record.content),
       });
       continue;
@@ -391,12 +401,11 @@ export function buildSyntheticResponsesFromChatCompletion(
           id: messageItemId,
           type: 'message',
           role: 'assistant',
-          content: [
-            {
-              type: 'output_text',
-              text: assistantText,
-            },
-          ],
+          // Codex app-server surfaces both output_text.delta and the completed
+          // message item as text-bearing notifications. Keep the full text in
+          // the delta path only so downstream finalText aggregation does not
+          // duplicate assistant output.
+          content: [],
         },
       },
     });
