@@ -10,7 +10,7 @@ import type { AgentBackendEvent } from '../server/runtime/agent-backend-adapter-
 import { startSmokeModelServer, type SmokeModelServer } from './lib/smoke-model-server.js';
 
 const LIVE_MODE = process.env.AGENT_SERVER_LIVE_ADAPTER_SMOKE === '1';
-const LIVE_TIMEOUT_MS = Number(process.env.AGENT_SERVER_LIVE_ADAPTER_SMOKE_TIMEOUT_MS || 120_000);
+const LIVE_TIMEOUT_MS = Number(process.env.AGENT_SERVER_LIVE_ADAPTER_SMOKE_TIMEOUT_MS || 300_000);
 const STRATEGIC_BACKENDS: StrategicAgentBackend[] = [
   'codex',
   'claude-code',

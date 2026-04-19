@@ -84,12 +84,14 @@
 - [x] live adapter preflight 支持临时 smoke LLM endpoint：`AGENT_SERVER_ADAPTER_PREFLIGHT_SMOKE_LLM=1` 可验证 Claude Code bridge / 自研 agent 的 endpoint plumbing，不依赖本机真实 `3888` 服务。
 - [x] live adapter preflight 与 adapter runtime 使用同一套 `AGENT_SERVER_ADAPTER_LLM_BASE_URL/API_KEY/MODEL/PROVIDER` 环境变量覆盖语义；可在不修改 `openteam.json` 的情况下验证真实 Claude Code / 自研 agent endpoint。
 - [x] 增加 strict readiness preflight：`npm run check:agent-backend-adapters:strict` 会把 warning 也视为未就绪，用于最终判定真实 runtime/凭据是否已补齐。
+- [x] 区分 strict readiness 中的阻塞型 warning 与诊断型 advisory warning：Codex rate-limit 辅助接口不可读时保留提示，但不阻止后续 live smoke；真实 auth、endpoint、SDK shape 缺口仍会阻塞。
 - [x] 增加一键最终 readiness gate：`npm run check:agent-backend-adapters:ready` 先跑 strict preflight，未就绪时跳过耗时 live smoke；就绪后用 Codex isolated live smoke 覆盖 Codex，再对剩余已选择 backend 跑 live smoke，并尊重 `AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS` 子集选择。
 - [x] readiness gate 支持 dry-run 计划检查：`AGENT_SERVER_ADAPTER_READINESS_DRY_RUN=1 npm run check:agent-backend-adapters:ready` 只打印将执行的步骤，避免每次调整子集逻辑都真实启动 backend。
 - [x] 新增 `docs/agent-backend-readiness.md`，集中记录本机 runtime/凭据配置、子集 readiness、dry-run 和最终完成门禁。
 - [x] 新增 `examples/agent-backend-readiness.env.example`，提供真实 endpoint、Gemini auth、Codex model 和 readiness 子集配置模板，不包含密钥。
 - [x] live adapter smoke 支持临时 smoke LLM endpoint：`AGENT_SERVER_LIVE_ADAPTER_SMOKE_LLM=1` 会为 supervisor path 注入临时 OpenAI-compatible endpoint 并重启 runtime supervisor，Claude Code bridge / 自研 agent 已可完成真实 `runTurn` plumbing smoke。
 - [x] Codex live smoke 支持临时隔离 `CODEX_HOME`：`AGENT_SERVER_LIVE_ADAPTER_ISOLATED_CODEX_HOME=1` 会复制 auth/config 到临时目录但不复制 sqlite 状态库，用于排查官方更新后的本地 state migration 问题。
+- [x] 将 live adapter smoke 默认总超时提高到 300 秒，并支持 `AGENT_SERVER_LIVE_ADAPTER_SMOKE_TIMEOUT_MS` 覆盖，避免 Codex/Gemini 等真实模型在已经持续输出事件时被 120 秒总时限误杀。
 - [ ] 补齐本机真实 backend runtime/凭据后让 live adapter smoke 全绿：同一简单代码修改任务分别通过 Codex、Claude Code、Gemini、自研 agent 完成，并输出标准事件；最终门禁运行 `npm run check:agent-backend-adapters:ready`。
 - [ ] 修复当前真实环境 Claude/self-hosted live 缺口：启动/配置可用 OpenAI-compatible LLM endpoint，供 Claude Code bridge 和自研 agent 使用；可通过 `openteam.json` 或 `AGENT_SERVER_ADAPTER_LLM_BASE_URL/API_KEY/MODEL` 覆盖配置，若只验证 adapter plumbing，可先运行 `npm run check:agent-backend-adapters:smoke-llm`。
 - [ ] 修复当前 Gemini auth 缺口：SDK dist/source fallback 和 shape preflight 已可用，但当前机器缺少 `GEMINI_API_KEY` / `GOOGLE_API_KEY` / `GOOGLE_APPLICATION_CREDENTIALS` / `/Users/zhangyanggao/.gemini/oauth_creds.json`，因此 Gemini live `runTurn` 还不能完成。
@@ -98,7 +100,7 @@
 - Codex SDK 的高层能力适合做完整 agent backend，但不适合作为现有 model provider 的简单替换。
 - 完整 agent backend 的 fallback 语义不同于普通 model provider：执行中途静默切换 backend 可能破坏工具状态和 workspace 状态。
 - Claude Code 当前 adapter 仍是 partial bridge：能复用现有 native runtime 和 normalized events，但还没有一等 SDK/RPC 级 abort/resume/full native state。
-- 当前机器 live smoke 阻塞项：Codex app-server preflight、auth/account/model/rate-limit probe 已通过，隔离 `CODEX_HOME` 后不再出现 sqlite migration warning，`gpt-5.4` 已通过真实 isolated live smoke；`gpt-5.2-codex` 在当前 ChatGPT 账号下由官方 app-server 返回 unsupported，不作为 AgentServer adapter 缺口。Claude Code / 自研 agent 在 smoke LLM 模式下已可完成 live `runTurn` plumbing smoke，真实配置仍取决于可用 OpenAI-compatible endpoint，可通过 `openteam.json` 或 `AGENT_SERVER_ADAPTER_LLM_*` 环境变量提供；Gemini SDK dist/source fallback 与 shape preflight 已可用，live smoke 已推进到缺少 Gemini/Google auth input。Gemini 官方 clean build 仍受上游 TS4111 错误阻塞，但当前不改官方源码。
+- 当前机器 live smoke 阻塞项：Codex app-server preflight、auth/account/model 已通过，rate-limit probe 若因 upstream account usage 接口不可读只作为 advisory warning，隔离 `CODEX_HOME` 后不再出现 sqlite migration warning，`gpt-5.4` 已通过真实 isolated live smoke；`gpt-5.2-codex` 在当前 ChatGPT 账号下由官方 app-server 返回 unsupported，不作为 AgentServer adapter 缺口。Claude Code / 自研 agent 在 smoke LLM 模式下已可完成 live `runTurn` plumbing smoke，真实配置仍取决于可用 OpenAI-compatible endpoint，可通过 `openteam.json` 或 `AGENT_SERVER_ADAPTER_LLM_*` 环境变量提供；Gemini SDK dist/source fallback 与 shape preflight 已可用，live smoke 已推进到缺少 Gemini/Google auth input。Gemini 官方 clean build 仍受上游 TS4111 错误阻塞，但当前不改官方源码。
 
 #### Takeaway
 - SDK/app-server 是 backend adapter 的实现细节；AgentServer 不能把自己的 orchestration 责任交给任何单一 backend。

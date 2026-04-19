@@ -13,6 +13,7 @@ npm run check:agent-backend-adapters:ready
 该命令会：
 
 - 先运行 strict preflight，确认 runtime、endpoint、SDK shape 和凭据输入。
+- strict preflight 只会被失败项和阻塞型 warning 拦住；Codex rate-limit 接口暂时不可读这类诊断型 warning 会保留输出，但不阻止后续 live smoke。
 - 如果 strict preflight 失败，停止后续耗时 live smoke。
 - 如果 Codex 被选中，用 isolated `CODEX_HOME` 跑 Codex live smoke。
 - 对剩余已选 backend 跑真实 `runTurn` live smoke。
@@ -33,6 +34,12 @@ AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS=gemini npm run check:agent-backend-adap
 
 ```bash
 AGENT_SERVER_ADAPTER_READINESS_DRY_RUN=1 npm run check:agent-backend-adapters:ready
+```
+
+真实 live smoke 默认总超时是 300 秒。慢模型或远端 backend 可以临时覆盖：
+
+```bash
+AGENT_SERVER_LIVE_ADAPTER_SMOKE_TIMEOUT_MS=600000 npm run check:agent-backend-adapters:ready
 ```
 
 ## Claude Code / Self-Hosted Endpoint
@@ -97,3 +104,5 @@ npm run check:agent-backend-adapters:ready
 ```
 
 该命令必须完成 strict preflight、Codex isolated live smoke，以及所有已选 backend 的真实 `runTurn` live smoke。完成后仍需保留官方 backend checkout 清洁：AgentServer adapter 逻辑应在 AgentServer 侧维护，不写入 `server/backend/codex`、`server/backend/gemini` 或 `server/backend/claude-code`。
+
+readiness 输出中的 `blockingWarn` 代表会阻止 strict preflight 的 warning；`advisoryWarn` 代表仅供诊断的信息，例如 Codex account/rate-limit 辅助接口暂时不可读。真实 completion 仍要求 `failed=0` 且 `blockingWarn=0`。

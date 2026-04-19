@@ -33,6 +33,7 @@ type CheckResult = {
   name: string;
   status: 'ok' | 'warn' | 'fail';
   detail: string;
+  strictBlocking?: boolean;
 };
 
 async function main(): Promise<void> {
@@ -97,8 +98,18 @@ async function main(): Promise<void> {
 
     const failed = checks.filter((check) => check.status === 'fail');
     const warnings = checks.filter((check) => check.status === 'warn');
-    console.log(`SUMMARY backends=${selectedBackends.join(',')} ok=${checks.length - failed.length - warnings.length} warn=${warnings.length} failed=${failed.length} strict=${STRICT}`);
-    if (failed.length > 0 || (STRICT && warnings.length > 0)) {
+    const blockingWarnings = warnings.filter((check) => check.strictBlocking !== false);
+    const advisoryWarnings = warnings.length - blockingWarnings.length;
+    console.log([
+      `SUMMARY backends=${selectedBackends.join(',')}`,
+      `ok=${checks.length - failed.length - warnings.length}`,
+      `warn=${warnings.length}`,
+      `blockingWarn=${blockingWarnings.length}`,
+      `advisoryWarn=${advisoryWarnings}`,
+      `failed=${failed.length}`,
+      `strict=${STRICT}`,
+    ].join(' '));
+    if (failed.length > 0 || (STRICT && blockingWarnings.length > 0)) {
       process.exitCode = 1;
     }
   } finally {
@@ -478,6 +489,7 @@ async function checkCodexRateLimits(client: JsonRpcProbeClient): Promise<void> {
       backend: 'codex',
       name: 'codex-rate-limits',
       status: 'warn',
+      strictBlocking: false,
       detail: `Codex app-server did not return rate limits: ${error instanceof Error ? error.message : String(error)}`,
     });
   }
