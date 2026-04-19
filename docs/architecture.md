@@ -600,7 +600,7 @@ backend 自己的自然语言总结
 
 ### 1.10 Live Benchmark 的位置
 
-Live Backend Benchmark 是一个独立模块，当前只记录需求，暂不实现。
+Live Backend Benchmark 是一个独立模块，当前只沉淀设计，暂不实现 runner 或线上评分系统。详细设计占位见 [`backend-benchmark.md`](./backend-benchmark.md)。
 
 它未来负责回答：
 
@@ -621,7 +621,7 @@ AgentServer Orchestrator
 
 Benchmark 不应该阻塞 agent-backend orchestration 的首版实现。首版可以先用手写 backend strength policy；benchmark 后续作为独立模块补上，逐步替代或修正人工策略。
 
-真实任务中通常只运行一个主 backend 以节约 token。未来 benchmark 需要通过离线基准、真实任务反馈、低比例探索、replay、只读 shadow review 等方式更新评分；这些设计后续单独讨论。
+真实任务中通常只运行一个主 backend 以节约 token。未来 benchmark 需要通过离线基准、真实任务反馈、低比例探索、replay、只读 shadow review 等方式更新评分。
 
 ### 1.11 v9 的定位
 
@@ -1328,7 +1328,7 @@ Live Backend Benchmark 是后续独立模块，不在当前首版 agent-backend 
 - 质量、正确性、成本、延迟、工具可靠性、用户接受率、后续返工率如何综合。
 - benchmark score 如何作为 orchestrator 的路由信号之一，而不是替代 orchestrator。
 
-当前只在 `PROJECT.md` 保留任务提醒，后续单独讨论和实现。
+当前设计记录在 [`backend-benchmark.md`](./backend-benchmark.md)。后续如果实现，应作为独立任务开启，而不是混入首版 agent-backend orchestration。
 
 ### 3.7 Evolution Engine 的正确位置
 

@@ -18,8 +18,12 @@ import {
   BACKEND_CATALOG,
   createAgentClient,
   getBackendCapabilities,
+  hasAgentBackendAdapter,
+  isProductionCompleteAgentBackend,
+  listAvailableAgentBackendAdapters,
   listRegisteredStrategicBackendIds,
   listStrategicAgentBackends,
+  listStrategicAgentBackendProfiles,
   listSupportedBackends,
 } from '@agi4sci/agent-server';
 
@@ -51,6 +55,21 @@ console.log(listStrategicAgentBackends());
 console.log(listRegisteredStrategicBackendIds());
 // Runtime-registered strategic ids today, for example:
 // [ 'openteam_agent', 'claude-code', 'codex' ]
+
+console.log(listStrategicAgentBackendProfiles().map((profile) => ({
+  id: profile.id,
+  currentTransport: profile.currentTransport,
+  productionComplete: isProductionCompleteAgentBackend(profile),
+})));
+
+console.log(listAvailableAgentBackendAdapters().map((adapter) => adapter.id));
+// Structured adapter implementations currently available in AgentServer runtime.
+
+console.log(hasAgentBackendAdapter('codex'));
+// true once the Codex app-server adapter prototype is registered.
+
+console.log(hasAgentBackendAdapter('gemini'));
+// true once the Gemini CLI SDK adapter prototype is registered.
 ```
 
 Use capabilities for advanced UI or routing decisions. For ordinary task execution, changing only `agent.backend` is enough.
@@ -64,6 +83,16 @@ type StrategicBackend = 'codex' | 'claude-code' | 'gemini' | 'self-hosted-agent'
 ```
 
 The strategic set is the default target for the multi-agent orchestration roadmap. Experimental, compatibility, and legacy backends can still be called explicitly, but should not receive default orchestrator routes for high-value production tasks unless policy explicitly opts in.
+
+Strategic backend profiles intentionally separate `currentCapabilities` from `targetCapabilities`. This prevents a temporary CLI bridge from being treated as a production-complete agent backend before it exposes structured events, readable state, abort/resume, and full status transparency.
+
+Adapter availability and production completeness are separate checks:
+
+- `listStrategicAgentBackendProfiles()` describes roadmap and capability targets.
+- `listAvailableAgentBackendAdapters()` lists structured adapter implementations that AgentServer can instantiate.
+- `isProductionCompleteAgentBackend(profile)` is stricter; prototype adapters stay false until live smoke validates the full contract.
+
+At the current prototype stage, Codex uses the app-server JSON-RPC route, Gemini uses the Gemini CLI SDK route, and the self-hosted agent uses the direct harness route. Claude Code remains the next structured adapter target.
 
 ## Backend Adapter Model
 
@@ -142,6 +171,38 @@ console.log(result.run.status);
 console.log(result.run.output);
 console.log(result.run.events);
 ```
+
+## Opt In Multi-Stage Orchestration
+
+The default request path remains single-stage unless the caller explicitly opts in. This keeps ordinary runs cheap and predictable while allowing high-value tasks to use multiple strategic backends behind one external request.
+
+```ts
+const result = await agent.runTask('Diagnose this failing test, fix it, then verify the change.', {
+  agentId: 'repo-helper',
+  metadata: {
+    orchestrator: {
+      mode: 'multi_stage',
+      planKind: 'diagnose-implement-verify',
+      failureStrategy: 'fallback_backend',
+      fallbackBackend: 'codex',
+      maxRetries: 1,
+    },
+  },
+});
+
+console.log(result.run.orchestrator?.stageOrder);
+console.log(result.run.stages?.map((stage) => ({
+  id: stage.id,
+  backend: stage.backend,
+  type: stage.type,
+  status: stage.status,
+  executionPath: stage.audit.executionPath,
+})));
+```
+
+Supported `metadata.orchestrator.planKind` values are `implement-only`, `implement-review`, and `diagnose-implement-verify`. Supported `failureStrategy` values are `fail_run`, `retry_stage`, `fallback_backend`, and `continue_with_warnings`; the last value is currently recorded as policy intent but still fails workspace-writing stages rather than silently continuing.
+
+In multi-stage mode AgentServer builds a canonical handoff packet for each stage. The packet includes prior stage summaries, latest workspace facts, constraints, open questions, and stage-specific instructions. The public run still completes as one request, while `run.stages`, `stage-result` events, and `run.orchestrator` expose the internal backend relay for audit/debug views.
 
 ## Manage Agent Lifecycle
 
@@ -302,9 +363,13 @@ Run/Stage ledger status semantics:
 
 - A `Run` represents one external request.
 - A `Stage` is an internal audited step inside a run.
+- `run.orchestrator` records the rule or policy that planned the stage graph, the ordered stage ids, completed/failed/skipped ids, and compact stage summaries for future handoff.
 - A run can be `running` while multiple stages are `pending/running/completed`.
 - If a stage waits for approval or clarification, the run enters `waiting_user`.
 - Stage failure does not automatically mean run failure; orchestrator policy may retry or fallback, but audit must retain both the failed stage and fallback stage.
+- `stage.result.boundaryVerification` records AgentServer-observed workspace facts, test events, artifacts, and changed files at the stage boundary, so later stages do not have to trust only a backend's natural-language summary.
+- `stage.audit.executionPath` records whether the stage ran through the formal `agent_backend_adapter` path or the legacy supervisor compatibility path.
+- The rule-based orchestrator core supports multi-stage execution waves, stage-to-stage handoff, retry, and fallback decisions. The default service request path remains single-stage, and callers can opt in to multi-stage execution with `metadata.orchestrator.mode = 'multi_stage'`.
 
 The detailed adapter-side contract is maintained in [Adapter Contract](./adapter-contract.md).
 
@@ -409,10 +474,29 @@ Example normalized event sequence:
 The smoke matrix for this contract is:
 
 ```bash
+npm run check:agent-backend-adapters
+npm run check:agent-backend-adapters:ready
+npm run check:agent-backend-adapters:smoke-llm
+npm run check:agent-backend-adapters:strict
+npm run smoke:agent-backend-adapters
+npm run smoke:agent-backend-adapters:codex-isolated
+npm run smoke:agent-backend-adapters:live-smoke-llm
 npm run smoke:agent-sdk:all-backends
 npm run smoke:agent-server:tool-matrix
 ```
 
+`check:agent-backend-adapters` is a preflight for live adapter work. It checks strategic adapter registration, Codex app-server command availability plus a lightweight JSON-RPC initialize/thread-start handshake, the OpenAI-compatible LLM endpoint used by Claude Code/self-hosted bridge paths, and whether the Gemini SDK module is resolvable. It honors `AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS` for subset checks.
+Codex preflight also records non-secret account/model/rate-limit summaries and auth status. Gemini preflight records whether usable auth inputs exist without printing key material, and it verifies the SDK shape expected by the adapter: `GeminiCliAgent` plus `session.sendStream(prompt, signal)`.
+`check:agent-backend-adapters:smoke-llm` runs the same preflight with a temporary OpenAI-compatible smoke LLM endpoint. Use it to verify adapter plumbing for Claude Code/self-hosted paths without requiring the real `openteam.json` endpoint to be online.
+For production-like Claude Code/self-hosted checks, preflight and runtime share the same environment override semantics: set `AGENT_SERVER_ADAPTER_LLM_BASE_URL`, `AGENT_SERVER_ADAPTER_LLM_API_KEY`, `AGENT_SERVER_ADAPTER_LLM_MODEL`, and optionally `AGENT_SERVER_ADAPTER_LLM_PROVIDER` to test a real endpoint without editing `openteam.json`.
+`check:agent-backend-adapters:strict` runs the production preflight with strict readiness semantics: warnings, such as missing Gemini auth inputs, also produce a non-zero exit. Use it as the final local gate before declaring all strategic backend runtimes and credentials ready.
+`check:agent-backend-adapters:ready` is the one-command readiness gate. It runs strict preflight first and stops there if local runtime or credential setup is missing. Once strict preflight passes, it covers Codex with isolated live smoke when Codex is selected, then runs live smoke for the remaining selected backends. It honors `AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS` for subset readiness checks, and defaults Codex live smoke to `gpt-5.4` unless `AGENT_SERVER_CODEX_MODEL` is already set.
+Set `AGENT_SERVER_ADAPTER_READINESS_DRY_RUN=1` with `check:agent-backend-adapters:ready` to print the planned readiness steps without running preflight or live smoke. This is useful when checking backend subsets or reviewing readiness behavior after script changes.
+`prepare:gemini-sdk-dev` prepares the vendored Gemini checkout for local `tsx` development fallback by installing workspace links, generating git metadata, attempting the official core/sdk builds, and copying policy TOML assets into the partial dist tree if the upstream build is blocked. This does not replace the production requirement to build or link a clean `@google/gemini-cli-sdk` package.
+`smoke:agent-backend-adapters` verifies that the strategic agent-backend adapter set is registered and exposes structured capabilities for Codex, Claude Code, Gemini, and the self-hosted agent. By default it runs a contract smoke that does not require external model credentials. Set `AGENT_SERVER_LIVE_ADAPTER_SMOKE=1` to also run a real `runTurn` smoke against the installed backend runtimes: it creates a temporary workspace, sends a handoff packet, consumes structured events, and requires a completed `stage-result`. Set `AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS=codex,gemini` to verify a subset while bringing local runtimes online.
+`smoke:agent-backend-adapters:codex-isolated` runs Codex live smoke with a temporary `CODEX_HOME` containing copied auth/config files but no copied sqlite state. It is useful after upstream Codex updates when local state migrations may be stale.
+Codex app-server may emit transient `error` notifications with `willRetry: true` while it retries stream sampling or falls back to HTTP. AgentServer maps those to non-terminal running status events and waits for the final app-server outcome. Use `AGENT_SERVER_CODEX_MODEL` and `AGENT_SERVER_CODEX_EFFORT` to test account-specific model access; on the current ChatGPT Pro auth path, `gpt-5.4` passes isolated live smoke, while `gpt-5.2-codex` can be listed but rejected by the upstream app-server for this account.
+`smoke:agent-backend-adapters:live-smoke-llm` runs live `runTurn` smoke with a temporary OpenAI-compatible endpoint injected into supervisor-backed adapters. It is useful for Claude Code/self-hosted plumbing checks before the real shared endpoint is available; Codex and Gemini still need their own native runtime credentials for full production-like live smoke.
 `smoke:agent-sdk:all-backends` verifies the external SDK/HTTP streaming surface for every backend id in `listSupportedBackends()`. It requires managed launcher binaries for native backends under `server/backend/bin` or `OPENTEAM_BACKEND_BIN_DIR`; otherwise it fails rather than silently accepting partial backend coverage.
 `smoke:agent-sdk:installed` verifies the npm package install path and also runs every backend by pointing the installed package at the managed launcher directory.
 

@@ -1,5 +1,6 @@
 import type { BackendType } from '../../core/runtime/backend-catalog.js';
 import type { BackendStageResult } from '../agent_server/types.js';
+import type { RuntimeModelInput } from './model-spec.js';
 import type { RuntimeEventProtocolVersion } from './runtime-event-contract.js';
 
 export interface SessionInput {
@@ -65,6 +66,7 @@ export interface RunSessionOptions {
   model?: string;
   modelProvider?: string;
   modelName?: string;
+  llmEndpoint?: RuntimeModelInput['llmEndpoint'];
   sessionMode?: RuntimeSessionMode;
   persistentKey?: string;
   toolMode?: 'auto' | 'none';

@@ -75,6 +75,16 @@ export function resolveRuntimeBackendConnectionCandidates(
     candidates.push(candidate);
   };
 
+  if (input.llmEndpoint?.baseUrl || input.llmEndpoint?.modelName) {
+    pushCandidate({
+      model: explicitRequestedModel || trim(input.llmEndpoint?.modelName) || defaultRequestedModel,
+      provider: explicitRequestedProvider || trim(input.llmEndpoint?.provider) || defaultRequestedProvider,
+      modelName: explicitRequestedModelName || trim(input.llmEndpoint?.modelName) || defaultRequestedModelName,
+      baseUrl: trim(input.llmEndpoint?.baseUrl),
+      apiKey: trim(input.llmEndpoint?.apiKey),
+    });
+  }
+
   if (override?.baseUrl || override?.modelName) {
     pushCandidate({
       model: trim(override.model) || explicitRequestedModel || defaultRequestedModel,

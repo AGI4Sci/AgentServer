@@ -1,4 +1,5 @@
 import type {
+  AgentBackendId,
   BackendTier,
   BackendType,
   ExecutionBackendKind,
@@ -30,7 +31,7 @@ export interface AgentBackendCapabilities {
 
 export interface StartBackendSessionInput {
   agentServerSessionId: string;
-  backend: BackendType;
+  backend: AgentBackendId;
   workspace: string;
   scope: 'session' | 'stage';
   metadata?: Record<string, unknown>;
@@ -93,7 +94,7 @@ export type AgentBackendEvent =
     };
 
 export interface AgentBackendAdapter {
-  readonly backendId: BackendType;
+  readonly backendId: AgentBackendId;
   readonly kind: Extract<ExecutionBackendKind, 'agent_backend'>;
   readonly tier: BackendTier;
 

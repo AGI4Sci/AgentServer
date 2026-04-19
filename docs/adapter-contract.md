@@ -395,6 +395,8 @@ type ApprovalEvent = {
 
 审批结果再由 adapter 转回 backend 原生协议。Run 在等待审批时进入 `waiting_user`。
 
+如果当前调用路径还没有可用的上层审批决策面，adapter 不能默认授权高风险操作；必须安全拒绝、取消，或把 stage 明确置为 `waiting_user`。审批请求不能被当作普通通知吞掉，也不能只留在 backend 私有状态里。
+
 ## 12. Sandbox Ownership
 
 两种模式都允许：

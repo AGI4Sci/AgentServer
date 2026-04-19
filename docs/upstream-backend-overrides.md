@@ -9,10 +9,26 @@
 - 官方 backend 目录默认视为可替换 upstream source，可随官方版本重新 clone、pull 或覆盖。
 - 首选接入方式是官方 app-server、SDK、JSON-RPC、stdio RPC、HTTP/WebSocket event stream、本地 runtime API 或 schema-backed bridge。
 - 不把 AgentServer adapter 逻辑写进官方源码，除非没有其它稳定入口。
+- provider/auth input 这类原生 runtime 接线问题仍优先在 AgentServer adapter 或环境配置层解决；如果外围适配需要付出明显不成比例的复杂度，允许对官方源码做小 patch，但必须登记修改文件、目的和重放步骤。
 - 必须修改官方源码时，改动要小、集中、可重放，并在本文档登记。
 - 重新同步官方版本后，先查看本文档，再决定是否需要重放 patch。
 
 ## Override Log
+
+当前检查结论：
+
+- `server/backend/codex`：无 AgentServer adapter 必需 patch。
+- `server/backend/gemini`：无 AgentServer adapter 必需 patch；存在 upstream clean build debt，见 Gemini 小节。
+- `server/backend/claude_code` / `server/backend/claude_code_rust`：无 AgentServer adapter 必需 patch。
+- AgentServer adapter 代码均放在 `server/runtime/adapters/`、`server/runtime/agent-backend-*.ts`、`scripts/`、`tests/` 和 `docs/` 等 AgentServer 侧路径中。
+
+允许考虑 upstream patch 的典型情况：
+
+- 官方 runtime 不暴露必要 provider/auth input，导致无法通过环境变量、配置文件、SDK option、app-server request 参数或 bridge 注入完成接线。
+- 官方 protocol 缺少必要状态、审批、工具事件、sandbox metadata、abort/resume 或 session id，且无法从现有事件/状态稳定推导。
+- 官方 build 或 packaging 问题阻塞 production artifact，且 dev fallback 不能满足目标部署。
+
+每次 patch 前仍应先确认是否可以通过 AgentServer 侧 adapter wrapper、preflight、env override、profile/capability 降级或 readiness 文档解决。
 
 ### Codex
 
@@ -56,6 +72,29 @@ owner:
 server/backend/gemini
 ```
 
+已知 upstream build debt：
+
+- `npm run prepare:gemini-sdk-dev` 可以完成 AgentServer 开发态 fallback 准备：安装 workspace links、生成 git metadata、复制 policy TOML，并让 adapter 通过 vendored dist/source 进入 SDK shape/auth preflight。
+- 官方 clean build 当前仍失败，直接运行底层检查可复现：
+
+```bash
+cd server/backend/gemini
+npx tsc --build packages/core/tsconfig.json --pretty false
+npx tsc --build packages/sdk/tsconfig.json --pretty false
+```
+
+当前错误：
+
+```text
+packages/core/src/code_assist/oauth2.ts(72,37): error TS4111: Property 'GEMINI_OAUTH_CLIENT_ID' comes from an index signature, so it must be accessed with ['GEMINI_OAUTH_CLIENT_ID'].
+packages/core/src/code_assist/oauth2.ts(80,41): error TS4111: Property 'GEMINI_OAUTH_CLIENT_SECRET' comes from an index signature, so it must be accessed with ['GEMINI_OAUTH_CLIENT_SECRET'].
+```
+
+建议处理：
+
+- 继续优先等待/同步官方 Gemini 修复，或在确需本地 production package build 时，在官方 checkout 中把对应 `process.env.GEMINI_OAUTH_CLIENT_ID` / `process.env.GEMINI_OAUTH_CLIENT_SECRET` 改成 bracket access。
+- 如果未来决定修改官方源码，必须把实际 patch 按下方模板登记；当前 AgentServer runtime 没有依赖这个 patch。
+
 待记录模板同上。
 
 ### Claude Code
@@ -65,7 +104,13 @@ server/backend/gemini
 本地路径：
 
 ```text
-<pending>
+server/backend/claude_code
+server/backend/claude_code_rust
 ```
+
+说明：
+
+- 当前 Claude Code agent-backend adapter 通过 AgentServer supervisor bridge 暴露 normalized events/result/readState，adapter 逻辑不写入 Claude Code checkout。
+- 若未来为了获得一等 SDK/RPC 级 abort/resume/full native state 而必须修改 Claude Code 官方源码，需在下方新增记录。
 
 待记录模板同上。

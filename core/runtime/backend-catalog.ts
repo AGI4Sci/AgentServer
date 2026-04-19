@@ -23,6 +23,8 @@ export const STRATEGIC_AGENT_BACKENDS = [
 
 export type StrategicAgentBackend = (typeof STRATEGIC_AGENT_BACKENDS)[number];
 
+export type AgentBackendId = BackendType | StrategicAgentBackend;
+
 export interface BackendCapabilities {
   persistentSession: boolean;
   permissionRequest: boolean;

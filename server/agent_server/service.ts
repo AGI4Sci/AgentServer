@@ -1,16 +1,21 @@
 import { randomUUID } from 'crypto';
 import { execFile } from 'child_process';
+import { readdir, stat } from 'fs/promises';
 import { promisify } from 'util';
-import { resolve, relative } from 'path';
+import { basename, join, resolve, relative } from 'path';
 import {
   DEFAULT_BACKEND,
   getBackendDescriptor,
   isBackendEnabled,
   normalizeBackendType,
 } from '../../core/runtime/backend-catalog.js';
-import type { BackendType } from '../../core/runtime/backend-catalog.js';
+import type { AgentBackendId, BackendType } from '../../core/runtime/backend-catalog.js';
 import type { SessionOutput, SessionStreamEvent } from '../runtime/session-types.js';
 import { runSessionViaSupervisor } from '../runtime/supervisor-session-runner.js';
+import {
+  createAgentBackendAdapter,
+  hasAgentBackendAdapter,
+} from '../runtime/agent-backend-adapter-registry.js';
 import { listConfiguredLlmEndpoints, loadOpenTeamConfig } from '../utils/openteam-config.js';
 import { AgentStore } from './store.js';
 import type {
@@ -43,10 +48,18 @@ import type {
   AgentRetrievalRequest,
   AgentRetrievalResult,
   AgentRunRecord,
+  AgentRunOrchestratorLedger,
   AgentRunStageType,
   AgentRunStageRecord,
+  AgentRunStageOwnership,
+  AgentRunStagePlan,
   BackendHandoffPacket,
+  BackendSessionRef,
   BackendStageResult,
+  CanonicalSessionContextSnapshot,
+  StageBoundaryVerification,
+  TestRunSummary,
+  StageSummary,
   AgentSessionRecord,
   AgentTurnRecord,
   AgentTurnLogQuery,
@@ -97,6 +110,13 @@ import type {
   ResetPersistentRequest,
   UpdateAgentEvolutionProposalStatusRequest,
 } from './types.js';
+import { getSessionRunArtifactsDir } from './paths.js';
+import {
+  buildRuleBasedOrchestratorLedger,
+  buildStageHandoffPacket,
+  executeMultiStagePlan,
+  type RuleBasedStagePlanKind,
+} from './orchestrator.js';
 
 const DEFAULT_RUNTIME_TEAM_ID = 'agent-server';
 const DEFAULT_SYSTEM_PROMPT = [
@@ -314,6 +334,86 @@ function renderSummaryBlock(title: string, values: string[]): string {
     return `${title}:\n- (empty)`;
   }
   return `${title}:\n${values.map((item) => `- ${item}`).join('\n')}`;
+}
+
+function outputFromAdapterStageResult(
+  stageResult: BackendStageResult | undefined,
+  streamedText: string,
+): SessionOutput {
+  if (stageResult?.status === 'failed' || stageResult?.status === 'timeout' || stageResult?.status === 'cancelled') {
+    return {
+      success: false,
+      error: stageResult.finalText || stageResult.handoffSummary || `stage ${stageResult.status}`,
+    };
+  }
+  return {
+    success: true,
+    result: stageResult?.finalText || streamedText.trim() || stageResult?.handoffSummary || '',
+  };
+}
+
+function resolveOrchestratorRequest(metadata?: Record<string, unknown>): {
+  mode: 'single_stage' | 'multi_stage';
+  planKind?: RuleBasedStagePlanKind;
+  failureStrategy?: AgentRunOrchestratorLedger['policy']['failureStrategy'];
+  maxRetries?: number;
+  fallbackBackend?: AgentBackendId;
+} {
+  const value = metadata?.orchestrator;
+  if (!value || typeof value !== 'object') {
+    return { mode: 'single_stage' };
+  }
+  const config = value as Record<string, unknown>;
+  const mode = config.mode === 'multi_stage' ? 'multi_stage' : 'single_stage';
+  const planKind = typeof config.planKind === 'string' && isRuleBasedStagePlanKind(config.planKind)
+    ? config.planKind
+    : undefined;
+  const failureStrategy = typeof config.failureStrategy === 'string' && isFailureStrategy(config.failureStrategy)
+    ? config.failureStrategy
+    : undefined;
+  const maxRetries = typeof config.maxRetries === 'number' && Number.isFinite(config.maxRetries)
+    ? Math.max(0, Math.floor(config.maxRetries))
+    : undefined;
+  const fallbackBackend = typeof config.fallbackBackend === 'string'
+    ? config.fallbackBackend as AgentBackendId
+    : undefined;
+  return {
+    mode,
+    planKind,
+    failureStrategy,
+    maxRetries,
+    fallbackBackend,
+  };
+}
+
+function isRuleBasedStagePlanKind(value: string): value is RuleBasedStagePlanKind {
+  return value === 'implement-only'
+    || value === 'implement-review'
+    || value === 'diagnose-implement-verify';
+}
+
+function isFailureStrategy(value: string): value is AgentRunOrchestratorLedger['policy']['failureStrategy'] {
+  return value === 'fail_run'
+    || value === 'retry_stage'
+    || value === 'fallback_backend'
+    || value === 'continue_with_warnings';
+}
+
+function inferArtifactKind(path: string): string {
+  const normalized = path.toLowerCase();
+  if (normalized.endsWith('.json')) {
+    return 'json';
+  }
+  if (normalized.endsWith('.md') || normalized.endsWith('.txt')) {
+    return 'text';
+  }
+  if (/\.(png|jpg|jpeg|gif|webp)$/.test(normalized)) {
+    return 'image';
+  }
+  if (/\.(log|out|err)$/.test(normalized)) {
+    return 'log';
+  }
+  return 'file';
 }
 
 function renderTurnsBlock(turns: { role: string; content: string; createdAt: string }[]): string {
@@ -2577,7 +2677,26 @@ export class AgentServerService {
     }
 
     const runId = `run-${Date.now().toString(36)}-${randomUUID().slice(0, 6)}`;
+    const orchestratorRequest = resolveOrchestratorRequest(request.metadata);
     const stageId = `${runId}-stage-implement-1`;
+    const stageOwnership: AgentRunStageOwnership = {
+      workspaceId: agent.workingDirectory,
+      writeMode: 'serial',
+    };
+    const orchestratorStartedAt = nowIso();
+    const initialOrchestratorLedger = buildRuleBasedOrchestratorLedger({
+      runId,
+      primaryBackend: agent.backend,
+      workspace: agent.workingDirectory,
+      requestText: message,
+      createdAt: orchestratorStartedAt,
+      planKind: orchestratorRequest.mode === 'multi_stage'
+        ? orchestratorRequest.planKind
+        : 'implement-only',
+    });
+    if (orchestratorRequest.failureStrategy) {
+      initialOrchestratorLedger.policy.failureStrategy = orchestratorRequest.failureStrategy;
+    }
     agent.runtime.isRunning = true;
     agent.runtime.currentRunId = runId;
     agent.runtime.lastTickAt = nowIso();
@@ -2611,43 +2730,45 @@ export class AgentServerService {
     );
     const contextRefs = this.buildRunContextRefs(contextSnapshot, contextPolicy);
     const workspaceFacts = await this.collectWorkspaceFacts(agent.workingDirectory);
-    const handoffPacket: BackendHandoffPacket = {
-      runId,
-      stageId,
-      stageType: 'implement',
+    const constraints = [
+      ...contextSnapshot.memoryConstraintEntries.map((item) => item.desc),
+      ...contextSnapshot.persistentConstraintEntries.map((item) => item.desc),
+    ].filter(Boolean);
+    const openQuestions = contextSnapshot.pendingClarification
+      ? [contextSnapshot.pendingClarification.question]
+      : [];
+    const canonicalContext = {
       goal: message,
-      userRequest: message,
-      canonicalContext: {
-        goal: message,
-        plan: [],
-        decisions: [],
-        constraints: [
-          ...contextSnapshot.memoryConstraintEntries.map((item) => item.desc),
-          ...contextSnapshot.persistentConstraintEntries.map((item) => item.desc),
-        ].filter(Boolean),
-        workspaceState: {
-          ...workspaceFacts,
-        },
-        artifacts: [],
-        backendRunRecords: [],
-        openQuestions: contextSnapshot.pendingClarification
-          ? [contextSnapshot.pendingClarification.question]
-          : [],
-      },
-      stageInstructions: this.renderHandoffStageInstructions(agent.backend, 'implement'),
-      constraints: [
-        ...contextSnapshot.memoryConstraintEntries.map((item) => item.desc),
-        ...contextSnapshot.persistentConstraintEntries.map((item) => item.desc),
-      ].filter(Boolean),
-      workspaceFacts: {
+      plan: initialOrchestratorLedger.plan.map((stage) => `${stage.type}:${stage.backend}`),
+      decisions: [],
+      constraints,
+      workspaceState: {
         ...workspaceFacts,
       },
-      priorStageSummaries: [],
-      openQuestions: contextSnapshot.pendingClarification
-        ? [contextSnapshot.pendingClarification.question]
-        : [],
-      metadata: request.metadata,
+      artifacts: [],
+      backendRunRecords: [],
+      openQuestions,
     };
+    const handoffPacket: BackendHandoffPacket = buildStageHandoffPacket({
+      runId,
+      stage: initialOrchestratorLedger.plan[0] || {
+        stageId,
+        type: 'implement',
+        backend: agent.backend,
+        dependsOn: [],
+        reason: 'Default single stage fallback.',
+        ownership: stageOwnership,
+      },
+      goal: message,
+      userRequest: message,
+      canonicalContext,
+      stageInstructions: this.renderHandoffStageInstructions(agent.backend, 'implement'),
+      constraints,
+      workspaceFacts,
+      priorStageSummaries: [],
+      openQuestions,
+      metadata: request.metadata,
+    });
     const userTurn = {
       kind: 'turn' as const,
       turnId: `turn-${randomUUID()}`,
@@ -2670,35 +2791,73 @@ export class AgentServerService {
       }
     };
     let output: SessionOutput;
-    try {
-      output = await runSessionViaSupervisor(
-        agent.backend,
-        {
-          task: message,
-          context: executionContext,
-        },
-        {
-          backend: agent.backend,
-          teamId: agent.runtimeTeamId,
-          agentId: agent.runtimeAgentId,
-          cwd: agent.workingDirectory,
-          sessionMode: 'persistent',
-        persistentKey: agent.runtimePersistentKey,
-        requestId: runId,
-        sessionKey: `agent-server:${agent.id}:${session.id}`,
+    let stageRecord: AgentRunStageRecord;
+    let stageRecords: AgentRunStageRecord[];
+    let orchestratorLedger: AgentRunOrchestratorLedger;
+    if (orchestratorRequest.mode === 'multi_stage' && initialOrchestratorLedger.plan.length > 1) {
+      const multiStage = await this.runMultiStageBackendTurns({
+        agent,
+        session,
+        runId,
+        message,
+        executionContext,
+        ledger: initialOrchestratorLedger,
+        canonicalContext,
+        constraints,
+        openQuestions,
+        metadata: request.metadata,
         localDevPolicy: request.localDevPolicy,
-      },
-      {
-        onEvent: (event) => {
-          emitEvent(event);
-        },
-        },
-      );
-    } catch (error) {
-      const messageText = error instanceof Error ? error.message : String(error);
-      emitEvent({ type: 'error', error: messageText });
-      output = { success: false, error: messageText };
+        runStartedAtMs,
+        maxRetries: orchestratorRequest.maxRetries,
+        fallbackBackend: orchestratorRequest.fallbackBackend,
+        emitEvent,
+      });
+      output = multiStage.output;
       emitEvent({ type: 'result', output });
+      stageRecord = multiStage.stages[multiStage.stages.length - 1] || this.createSyntheticFailedStageRecord({
+        runId,
+        stageId,
+        backend: agent.backend,
+        handoffPacket,
+        message,
+        output,
+        startedAtMs: runStartedAtMs,
+      });
+      stageRecords = multiStage.stages.length > 0 ? multiStage.stages : [stageRecord];
+      orchestratorLedger = multiStage.ledger;
+    } else {
+      const stageExecution = await this.runSingleStageBackendTurn({
+        agent,
+        session,
+        backend: agent.backend,
+        message,
+        executionContext,
+        handoffPacket,
+        localDevPolicy: request.localDevPolicy,
+        emitEvent,
+      });
+      const single = await this.buildStageRecordFromExecution({
+        agent,
+        runId,
+        stagePlan: initialOrchestratorLedger.plan[0],
+        fallbackStageId: stageId,
+        handoffPacket,
+        stageExecution,
+        output: stageExecution.output,
+        events,
+        beforeWorkspaceFacts: workspaceFacts,
+        runStartedAtMs,
+        createdAt: userTurn.createdAt,
+      });
+      output = stageExecution.output;
+      stageRecord = single.stageRecord;
+      stageRecords = [stageRecord];
+      orchestratorLedger = this.completeOrchestratorLedger(initialOrchestratorLedger, [stageRecord]);
+      emitEvent({
+        type: 'stage-result',
+        stageId: stageRecord.id,
+        result: stageRecord.result!,
+      });
     }
 
     const assistantContent = output.success ? output.result : output.error;
@@ -2732,64 +2891,6 @@ export class AgentServerService {
       reasons: output.success ? ['backend returned a successful result'] : [assistantContent || 'backend returned an error'],
       evaluator: 'agent-server-basic',
     };
-    const backendDescriptor = getBackendDescriptor(agent.backend);
-    const stageResult: BackendStageResult = {
-      status: output.success ? 'completed' : 'failed',
-      finalText: assistantContent,
-      filesChanged: [],
-      toolCalls: events
-        .filter((event) => event.type === 'tool-call')
-        .map((event) => ({
-          toolName: event.toolName,
-          detail: event.detail,
-          status: 'unknown' as const,
-        })),
-      testsRun: [],
-      findings: [],
-      handoffSummary: output.success
-        ? excerpt(assistantContent, 500)
-        : `Backend failed: ${excerpt(assistantContent, 500)}`,
-      nextActions: [],
-      risks: output.success ? [] : [assistantContent || 'backend returned an error'],
-      artifacts: [],
-      nativeSessionRef: {
-        id: `agent-server:${agent.id}:${session.id}`,
-        backend: agent.backend,
-        scope: 'session',
-        resumable: backendDescriptor.capabilities.persistentSession,
-      },
-    };
-    const stageRecord: AgentRunStageRecord = {
-      id: stageId,
-      runId,
-      type: 'implement',
-      backend: agent.backend,
-      status: stageResult.status,
-      dependsOn: [],
-      ownership: {
-        workspaceId: agent.workingDirectory,
-        writeMode: 'serial',
-      },
-      input: handoffPacket,
-      result: stageResult,
-      metrics: {
-        durationMs: Math.max(0, Date.now() - runStartedAtMs),
-        toolCallCount: stageResult.toolCalls.length,
-        approxInputTokens: approxTokens(executionContext),
-        usage: output.usage,
-      },
-      audit: {
-        backend: agent.backend,
-        backendKind: backendDescriptor.kind,
-        backendTier: backendDescriptor.tier,
-        inputSummary: excerpt(message, 500),
-        outputSummary: excerpt(assistantContent, 500),
-        failureReason: output.success ? undefined : assistantContent,
-        nativeSessionRef: stageResult.nativeSessionRef,
-      },
-      createdAt: userTurn.createdAt,
-      completedAt: assistantTurn.createdAt,
-    };
     let evaluation = basicEvaluation;
     if (this.options.evaluateRun) {
       try {
@@ -2805,7 +2906,8 @@ export class AgentServerService {
             },
             output,
             events,
-            stages: [stageRecord],
+            stages: stageRecords,
+            orchestrator: orchestratorLedger,
             contextRefs,
             metrics: {
               durationMs: Math.max(0, Date.now() - runStartedAtMs),
@@ -2847,7 +2949,8 @@ export class AgentServerService {
       },
       output,
       events,
-      stages: [stageRecord],
+      stages: stageRecords,
+      orchestrator: orchestratorLedger,
       contextRefs,
       metrics: {
         durationMs: Math.max(0, Date.now() - runStartedAtMs),
@@ -3043,7 +3146,7 @@ export class AgentServerService {
     ].join('\n');
   }
 
-  private renderHandoffStageInstructions(backend: BackendType, stageType: AgentRunStageType): string {
+  private renderHandoffStageInstructions(backend: string, stageType: AgentRunStageType): string {
     const shared = [
       `Stage type: ${stageType}`,
       'Use the handoff packet as the task boundary.',
@@ -3054,10 +3157,596 @@ export class AgentServerService {
       shared.push('Focus on correctness, bug finding, risk review, and verification signals.');
     } else if (backend === 'claude-code') {
       shared.push('Focus on implementation, refactoring, and coherent file edits.');
+    } else if (backend === 'gemini') {
+      shared.push('Focus on long-context reading, multimodal or broad-repository synthesis, and explicit uncertainty boundaries.');
+      shared.push('Avoid claiming high-risk workspace writes are complete unless tool/sandbox capability is explicitly available.');
     } else if (backend === 'openteam_agent') {
       shared.push('Focus on transparent tool/context behavior for self-hosted harness experimentation.');
+    } else if (isBackendEnabled(backend as BackendType) && getBackendDescriptor(backend as BackendType).kind === 'model_provider') {
+      shared.push('This is a model-provider fallback path: do not imply native agent loop, sandbox, or native session state.');
+      shared.push('Be explicit about capability gaps and return concise structured facts for the next full agent-backend stage.');
     }
     return shared.join('\n');
+  }
+
+  private async runSingleStageBackendTurn(input: {
+    agent: AgentManifest;
+    session: AgentSessionRecord;
+    backend: AgentBackendId;
+    message: string;
+    executionContext: string;
+    handoffPacket: BackendHandoffPacket;
+    localDevPolicy?: AgentMessageRequest['localDevPolicy'];
+    emitEvent: (event: SessionStreamEvent) => void;
+  }): Promise<{
+    output: SessionOutput;
+    adapterStageResult?: BackendStageResult;
+    nativeSessionRef?: BackendSessionRef;
+    executionPath: 'agent_backend_adapter' | 'legacy_supervisor';
+  }> {
+    if (hasAgentBackendAdapter(input.backend)) {
+      return await this.runSingleStageViaAgentBackendAdapter(input);
+    }
+    if (!isBackendEnabled(input.backend as BackendType)) {
+      const output: SessionOutput = {
+        success: false,
+        error: `No agent backend adapter or legacy runtime is registered for backend: ${input.backend}`,
+      };
+      input.emitEvent({ type: 'error', stageId: input.handoffPacket.stageId, error: output.error });
+      input.emitEvent({ type: 'result', output });
+      return {
+        output,
+        executionPath: 'legacy_supervisor',
+      };
+    }
+    return await this.runSingleStageViaLegacySupervisor(input);
+  }
+
+  private async runSingleStageViaAgentBackendAdapter(input: {
+    agent: AgentManifest;
+    session: AgentSessionRecord;
+    backend: AgentBackendId;
+    message: string;
+    executionContext: string;
+    handoffPacket: BackendHandoffPacket;
+    localDevPolicy?: AgentMessageRequest['localDevPolicy'];
+    emitEvent: (event: SessionStreamEvent) => void;
+  }): Promise<{
+    output: SessionOutput;
+    adapterStageResult?: BackendStageResult;
+    nativeSessionRef?: BackendSessionRef;
+    executionPath: 'agent_backend_adapter';
+  }> {
+    const adapter = createAgentBackendAdapter(input.backend);
+    let sessionRef: BackendSessionRef | undefined;
+    let adapterStageResult: BackendStageResult | undefined;
+    let output: SessionOutput | undefined;
+    const textParts: string[] = [];
+    try {
+      sessionRef = await adapter.startSession({
+        agentServerSessionId: `${input.agent.id}:${input.session.id}`,
+        backend: input.backend,
+        workspace: input.agent.workingDirectory,
+        scope: 'stage',
+        metadata: {
+          runId: input.handoffPacket.runId,
+          stageId: input.handoffPacket.stageId,
+          agentId: input.agent.id,
+          agentServerSessionId: input.session.id,
+        },
+      });
+
+      for await (const event of adapter.runTurn({
+        sessionRef,
+        handoff: input.handoffPacket,
+      })) {
+        if (event.type === 'stage-result') {
+          adapterStageResult = event.result;
+          continue;
+        }
+        if (event.type === 'text-delta') {
+          textParts.push(event.text);
+        }
+        if (event.type === 'result') {
+          output = event.output;
+        }
+        input.emitEvent(event);
+      }
+
+      if (!output) {
+        output = outputFromAdapterStageResult(adapterStageResult, textParts.join(''));
+        input.emitEvent({ type: 'result', output });
+      }
+      return {
+        output,
+        adapterStageResult,
+        nativeSessionRef: adapterStageResult?.nativeSessionRef || sessionRef,
+        executionPath: 'agent_backend_adapter',
+      };
+    } catch (error) {
+      const messageText = error instanceof Error ? error.message : String(error);
+      input.emitEvent({ type: 'error', stageId: input.handoffPacket.stageId, error: messageText });
+      output = { success: false, error: messageText };
+      input.emitEvent({ type: 'result', output });
+      return {
+        output,
+        adapterStageResult,
+        nativeSessionRef: sessionRef,
+        executionPath: 'agent_backend_adapter',
+      };
+    } finally {
+      if (sessionRef) {
+        await adapter.dispose({ sessionRef, reason: 'single stage execution finished' }).catch((error) => {
+          console.warn('[agent-server] adapter dispose failed:', error);
+        });
+      }
+    }
+  }
+
+  private async runMultiStageBackendTurns(input: {
+    agent: AgentManifest;
+    session: AgentSessionRecord;
+    runId: string;
+    message: string;
+    executionContext: string;
+    ledger: AgentRunOrchestratorLedger;
+    canonicalContext: CanonicalSessionContextSnapshot;
+    constraints: string[];
+    openQuestions: string[];
+    metadata?: Record<string, unknown>;
+    localDevPolicy?: AgentMessageRequest['localDevPolicy'];
+    runStartedAtMs: number;
+    maxRetries?: number;
+    fallbackBackend?: AgentBackendId;
+    emitEvent: (event: SessionStreamEvent) => void;
+  }): Promise<{
+    output: SessionOutput;
+    stages: AgentRunStageRecord[];
+    ledger: AgentRunOrchestratorLedger;
+  }> {
+    const result = await executeMultiStagePlan({
+      runId: input.runId,
+      ledger: input.ledger,
+      goal: input.message,
+      userRequest: input.message,
+      canonicalContext: input.canonicalContext,
+      constraints: input.constraints,
+      openQuestions: input.openQuestions,
+      metadata: input.metadata,
+      maxRetries: input.maxRetries,
+      fallbackBackend: input.fallbackBackend,
+      getWorkspaceFacts: async () => await this.collectWorkspaceFacts(input.agent.workingDirectory),
+      renderStageInstructions: (stage) => this.renderHandoffStageInstructions(stage.backend, stage.type),
+      runStage: async (handoff, stage, attempt) => {
+        const stageStartedAtMs = Date.now();
+        const stageEvents: SessionStreamEvent[] = [];
+        const stageExecution = await this.runSingleStageBackendTurn({
+          agent: input.agent,
+          session: input.session,
+          backend: stage.backend,
+          message: input.message,
+          executionContext: input.executionContext,
+          handoffPacket: handoff,
+          localDevPolicy: input.localDevPolicy,
+          emitEvent: (event) => {
+            stageEvents.push(event);
+            if (event.type !== 'result') {
+              input.emitEvent(event);
+            }
+          },
+        });
+        const built = await this.buildStageRecordFromExecution({
+          agent: input.agent,
+          runId: handoff.runId,
+          stagePlan: stage,
+          fallbackStageId: stage.stageId,
+          handoffPacket: handoff,
+          stageExecution,
+          output: stageExecution.output,
+          events: stageEvents,
+          beforeWorkspaceFacts: handoff.workspaceFacts,
+          runStartedAtMs: stageStartedAtMs,
+          approxInputTokens: approxTokens(input.executionContext) + approxTokens(JSON.stringify(handoff)),
+          createdAt: new Date(stageStartedAtMs).toISOString(),
+          attempt,
+        });
+        input.emitEvent({
+          type: 'stage-result',
+          stageId: built.stageRecord.id,
+          result: built.stageRecord.result!,
+        });
+        return built.stageRecord;
+      },
+    });
+    const lastStage = result.stages[result.stages.length - 1];
+    const output = result.failureAction
+      ? { success: false as const, error: result.failureAction.reason }
+      : {
+          success: true as const,
+          result: lastStage?.result?.finalText || lastStage?.result?.handoffSummary || '',
+        };
+    return {
+      output,
+      stages: result.stages,
+      ledger: result.ledger,
+    };
+  }
+
+  private async runSingleStageViaLegacySupervisor(input: {
+    agent: AgentManifest;
+    session: AgentSessionRecord;
+    backend: AgentBackendId;
+    message: string;
+    executionContext: string;
+    handoffPacket: BackendHandoffPacket;
+    localDevPolicy?: AgentMessageRequest['localDevPolicy'];
+    emitEvent: (event: SessionStreamEvent) => void;
+  }): Promise<{
+    output: SessionOutput;
+    executionPath: 'legacy_supervisor';
+  }> {
+    try {
+      const backend = input.backend as BackendType;
+      const output = await runSessionViaSupervisor(
+        backend,
+        {
+          task: input.message,
+          context: input.executionContext,
+        },
+        {
+          backend,
+          teamId: input.agent.runtimeTeamId,
+          agentId: input.agent.runtimeAgentId,
+          cwd: input.agent.workingDirectory,
+          sessionMode: 'persistent',
+          persistentKey: input.agent.runtimePersistentKey,
+          requestId: input.handoffPacket.runId,
+          sessionKey: `agent-server:${input.agent.id}:${input.session.id}`,
+          localDevPolicy: input.localDevPolicy,
+        },
+        {
+          onEvent: (event) => {
+            input.emitEvent(event);
+          },
+        },
+      );
+      return {
+        output,
+        executionPath: 'legacy_supervisor',
+      };
+    } catch (error) {
+      const messageText = error instanceof Error ? error.message : String(error);
+      input.emitEvent({ type: 'error', error: messageText });
+      const output: SessionOutput = { success: false, error: messageText };
+      input.emitEvent({ type: 'result', output });
+      return {
+        output,
+        executionPath: 'legacy_supervisor',
+      };
+    }
+  }
+
+  private completeOrchestratorLedger(
+    ledger: AgentRunOrchestratorLedger,
+    stages: AgentRunStageRecord[],
+  ): AgentRunOrchestratorLedger {
+    const stageSummaries = stages
+      .filter((stage) => Boolean(stage.result))
+      .map((stage) => this.toStageSummary(stage));
+    const completedStageIds = stages
+      .filter((stage) => stage.status === 'completed')
+      .map((stage) => stage.id);
+    const failedStageIds = stages
+      .filter((stage) => stage.status === 'failed' || stage.status === 'timeout' || stage.status === 'cancelled')
+      .map((stage) => stage.id);
+    const skippedStageIds = stages
+      .filter((stage) => stage.status === 'skipped')
+      .map((stage) => stage.id);
+    return {
+      ...ledger,
+      completedStageIds,
+      failedStageIds,
+      skippedStageIds,
+      stageSummaries,
+      summary: [
+        ledger.summary,
+        `Completed=${completedStageIds.length}; failed=${failedStageIds.length}; skipped=${skippedStageIds.length}.`,
+      ].join(' '),
+      updatedAt: nowIso(),
+    };
+  }
+
+  private async buildStageRecordFromExecution(input: {
+    agent: AgentManifest;
+    runId: string;
+    stagePlan?: AgentRunStagePlan;
+    fallbackStageId: string;
+    handoffPacket: BackendHandoffPacket;
+    stageExecution: {
+      output: SessionOutput;
+      adapterStageResult?: BackendStageResult;
+      nativeSessionRef?: BackendSessionRef;
+      executionPath: 'agent_backend_adapter' | 'legacy_supervisor';
+    };
+    output: SessionOutput;
+    events: SessionStreamEvent[];
+    beforeWorkspaceFacts: WorkspaceFacts;
+    runStartedAtMs: number;
+    approxInputTokens?: number;
+    createdAt: string;
+    attempt?: number;
+  }): Promise<{ stageRecord: AgentRunStageRecord }> {
+    const stagePlan = input.stagePlan || {
+      stageId: input.fallbackStageId,
+      type: input.handoffPacket.stageType,
+      backend: input.handoffPacket.stageType === 'implement' ? input.agent.backend : input.handoffPacket.canonicalContext.backendRunRecords[0]?.backend || input.agent.backend,
+      dependsOn: [],
+      reason: 'Fallback stage plan synthesized from handoff packet.',
+      ownership: {
+        workspaceId: input.agent.workingDirectory,
+        writeMode: input.handoffPacket.stageType === 'implement' ? 'serial' : 'none',
+      } satisfies AgentRunStageOwnership,
+    } satisfies AgentRunStagePlan;
+    const output = input.output;
+    const assistantContent = output.success ? output.result : output.error;
+    const postRunWorkspaceFacts = await this.collectWorkspaceFacts(input.agent.workingDirectory);
+    const boundaryVerification = await this.verifyStageBoundary({
+      agentId: input.agent.id,
+      sessionId: input.agent.activeSessionId,
+      runId: input.runId,
+      before: input.beforeWorkspaceFacts,
+      after: postRunWorkspaceFacts,
+      events: input.events,
+    });
+    const backendInfo = this.describeExecutionBackend(stagePlan.backend);
+    const stageResult: BackendStageResult = {
+      status: output.success ? 'completed' : 'failed',
+      finalText: assistantContent,
+      filesChanged: boundaryVerification.filesChanged,
+      diffSummary: postRunWorkspaceFacts.lastKnownDiffSummary,
+      toolCalls: input.stageExecution.adapterStageResult?.toolCalls ?? input.events
+        .filter((event) => event.type === 'tool-call')
+        .map((event) => ({
+          toolName: event.toolName,
+          detail: event.detail,
+          status: 'unknown' as const,
+        })),
+      testsRun: boundaryVerification.testsRun,
+      findings: input.stageExecution.adapterStageResult?.findings ?? [],
+      handoffSummary: output.success
+        ? (input.stageExecution.adapterStageResult?.handoffSummary || excerpt(assistantContent, 500))
+        : `Backend failed: ${excerpt(assistantContent, 500)}`,
+      nextActions: input.stageExecution.adapterStageResult?.nextActions ?? [],
+      risks: output.success
+        ? (input.stageExecution.adapterStageResult?.risks ?? [])
+        : [assistantContent || 'backend returned an error'],
+      artifacts: boundaryVerification.artifacts,
+      nativeSessionRef: input.stageExecution.nativeSessionRef || {
+        id: `agent-server:${input.agent.id}:${input.agent.activeSessionId}:${stagePlan.backend}`,
+        backend: stagePlan.backend,
+        scope: 'stage',
+        resumable: backendInfo.resumable,
+      },
+      boundaryVerification,
+    };
+    const stageRecord: AgentRunStageRecord = {
+      id: stagePlan.stageId,
+      runId: input.runId,
+      type: stagePlan.type,
+      backend: stagePlan.backend,
+      status: stageResult.status,
+      dependsOn: [...stagePlan.dependsOn],
+      ownership: stagePlan.ownership,
+      input: input.handoffPacket,
+      result: stageResult,
+      metrics: {
+        durationMs: Math.max(0, Date.now() - input.runStartedAtMs),
+        toolCallCount: stageResult.toolCalls.length,
+        approxInputTokens: input.approxInputTokens,
+        usage: output.usage,
+      },
+      audit: {
+        backend: stagePlan.backend,
+        backendKind: backendInfo.kind,
+        backendTier: backendInfo.tier,
+        executionPath: input.stageExecution.executionPath,
+        inputSummary: excerpt(input.handoffPacket.userRequest, 500),
+        outputSummary: excerpt(assistantContent, 500),
+        failureReason: output.success ? undefined : assistantContent,
+        nativeSessionRef: stageResult.nativeSessionRef,
+      },
+      createdAt: input.createdAt,
+      completedAt: nowIso(),
+    };
+    if (input.attempt && input.attempt > 0) {
+      stageRecord.audit.outputSummary = `[retry ${input.attempt}] ${stageRecord.audit.outputSummary || ''}`.trim();
+    }
+    return { stageRecord };
+  }
+
+  private createSyntheticFailedStageRecord(input: {
+    runId: string;
+    stageId: string;
+    backend: AgentBackendId;
+    handoffPacket: BackendHandoffPacket;
+    message: string;
+    output: SessionOutput;
+    startedAtMs: number;
+  }): AgentRunStageRecord {
+    const error = input.output.success ? input.output.result : input.output.error;
+    return {
+      id: input.stageId,
+      runId: input.runId,
+      type: input.handoffPacket.stageType,
+      backend: input.backend,
+      status: 'failed',
+      dependsOn: [],
+      input: input.handoffPacket,
+      result: {
+        status: 'failed',
+        finalText: error,
+        filesChanged: [],
+        toolCalls: [],
+        testsRun: [],
+        findings: [],
+        handoffSummary: `Stage failed before execution record could be built: ${excerpt(error, 500)}`,
+        nextActions: [],
+        risks: [error],
+        artifacts: [],
+      },
+      metrics: {
+        durationMs: Math.max(0, Date.now() - input.startedAtMs),
+        toolCallCount: 0,
+      },
+      audit: {
+        backend: input.backend,
+        backendKind: hasAgentBackendAdapter(input.backend) ? 'agent_backend' : undefined,
+        backendTier: hasAgentBackendAdapter(input.backend) ? 'strategic' : undefined,
+        inputSummary: excerpt(input.message, 500),
+        outputSummary: excerpt(error, 500),
+        failureReason: error,
+      },
+      createdAt: new Date(input.startedAtMs).toISOString(),
+      completedAt: nowIso(),
+    };
+  }
+
+  private describeExecutionBackend(backend: AgentBackendId): {
+    kind?: 'model_provider' | 'agent_backend';
+    tier?: 'strategic' | 'experimental' | 'compatibility' | 'legacy';
+    resumable: boolean;
+  } {
+    if (isBackendEnabled(backend as BackendType)) {
+      const descriptor = getBackendDescriptor(backend as BackendType);
+      return {
+        kind: descriptor.kind,
+        tier: descriptor.tier,
+        resumable: descriptor.capabilities.persistentSession,
+      };
+    }
+    if (hasAgentBackendAdapter(backend)) {
+      return {
+        kind: 'agent_backend',
+        tier: 'strategic',
+        resumable: true,
+      };
+    }
+    return {
+      resumable: false,
+    };
+  }
+
+  private toStageSummary(stage: AgentRunStageRecord): StageSummary {
+    const result = stage.result;
+    return {
+      runId: stage.runId,
+      stageId: stage.id,
+      backend: stage.backend,
+      summary: result?.handoffSummary || stage.audit.outputSummary || '',
+      filesChanged: result?.filesChanged || [],
+      testsRun: result?.testsRun.map((item) => `${item.command}: ${item.status}`) || [],
+      risks: result?.risks || [],
+    };
+  }
+
+  private deriveStageFilesChanged(before: WorkspaceFacts, after: WorkspaceFacts): string[] {
+    const beforeFiles = new Set(before.dirtyFiles);
+    const newDirtyFiles = after.dirtyFiles.filter((file) => !beforeFiles.has(file));
+    if (newDirtyFiles.length > 0) {
+      return [...new Set(newDirtyFiles)].sort();
+    }
+    if (before.lastKnownDiffSummary !== after.lastKnownDiffSummary && after.dirtyFiles.length > 0) {
+      return [...new Set(after.dirtyFiles)].sort();
+    }
+    return [];
+  }
+
+  private async verifyStageBoundary(input: {
+    agentId: string;
+    sessionId: string;
+    runId: string;
+    before: WorkspaceFacts;
+    after: WorkspaceFacts;
+    events: SessionStreamEvent[];
+  }): Promise<StageBoundaryVerification> {
+    const filesChanged = this.deriveStageFilesChanged(input.before, input.after);
+    const testsRun = this.collectObservedTestRuns(input.events);
+    const artifacts = await this.collectRunArtifacts(input.agentId, input.sessionId, input.runId);
+    const notes: string[] = [
+      'Workspace facts were collected by AgentServer before and after the stage.',
+    ];
+    if (testsRun.length === 0) {
+      notes.push('No machine-readable test command/result event was observed for this stage.');
+    }
+    if (artifacts.length === 0) {
+      notes.push('No run-scoped artifact files were observed for this stage.');
+    }
+    return {
+      source: 'agent-server',
+      verifiedAt: nowIso(),
+      beforeWorkspaceFacts: input.before,
+      afterWorkspaceFacts: input.after,
+      filesChanged,
+      testsRun,
+      artifacts,
+      notes,
+    };
+  }
+
+  private collectObservedTestRuns(events: SessionStreamEvent[]): TestRunSummary[] {
+    const summaries: TestRunSummary[] = [];
+    for (const event of events) {
+      if (event.type !== 'tool-call' && event.type !== 'tool-result') {
+        continue;
+      }
+      const detail = [event.toolName, event.detail, event.type === 'tool-result' ? event.output : undefined]
+        .filter(Boolean)
+        .join('\n');
+      if (!/\b(test|pytest|vitest|jest|npm\s+test|pnpm\s+test|yarn\s+test|cargo\s+test|go\s+test)\b/i.test(detail)) {
+        continue;
+      }
+      const status: TestRunSummary['status'] = event.type === 'tool-result'
+        ? (/fail|error|exit\s+[1-9]/i.test(detail) ? 'failed' : 'unknown')
+        : 'unknown';
+      summaries.push({
+        command: excerpt(detail, 240),
+        status,
+        summary: event.type === 'tool-result' ? excerpt(event.output || event.detail || '', 500) : undefined,
+      });
+    }
+    return summaries.slice(0, 20);
+  }
+
+  private async collectRunArtifacts(
+    agentId: string,
+    sessionId: string,
+    runId: string,
+  ): Promise<StageBoundaryVerification['artifacts']> {
+    const root = getSessionRunArtifactsDir(agentId, sessionId, runId);
+    try {
+      const entries = await readdir(root);
+      const artifacts: StageBoundaryVerification['artifacts'] = [];
+      for (const entry of entries.slice(0, 100)) {
+        const path = join(root, entry);
+        const entryStat = await stat(path).catch(() => null);
+        if (!entryStat || !entryStat.isFile()) {
+          continue;
+        }
+        artifacts.push({
+          id: `run-artifact:${runId}:${entry}`,
+          kind: inferArtifactKind(entry),
+          path,
+          metadata: {
+            fileName: basename(entry),
+            sizeBytes: entryStat.size,
+            modifiedAt: entryStat.mtime.toISOString(),
+          },
+        });
+      }
+      return artifacts;
+    } catch {
+      return [];
+    }
   }
 
   private async collectWorkspaceFacts(root: string): Promise<WorkspaceFacts> {

@@ -1,4 +1,4 @@
-import type { BackendType } from '../../core/runtime/backend-catalog.js';
+import type { AgentBackendId, BackendType } from '../../core/runtime/backend-catalog.js';
 import type { LocalDevPolicyHint, SessionOutput, SessionStreamEvent } from '../runtime/session-types.js';
 
 export type AgentLifecycleStatus = 'active' | 'paused' | 'waiting_user' | 'error';
@@ -106,6 +106,7 @@ export interface AgentRunRecord {
   output: SessionOutput;
   events: SessionStreamEvent[];
   stages?: AgentRunStageRecord[];
+  orchestrator?: AgentRunOrchestratorLedger;
   contextRefs?: AgentContextRef[];
   metrics?: AgentRunMetrics;
   evaluation?: AgentRunEvaluation;
@@ -143,6 +144,37 @@ export type AgentRunStageStatus =
   | 'timeout'
   | 'skipped';
 
+export type AgentRunOrchestratorMode = 'single_stage' | 'multi_stage';
+
+export interface AgentRunOrchestratorLedger {
+  version: 1;
+  mode: AgentRunOrchestratorMode;
+  policy: {
+    name: string;
+    version: string;
+    planner: 'rule_based' | 'llm_assisted' | 'manual';
+    failureStrategy: 'fail_run' | 'retry_stage' | 'fallback_backend' | 'continue_with_warnings';
+  };
+  plan: AgentRunStagePlan[];
+  stageOrder: string[];
+  completedStageIds: string[];
+  failedStageIds: string[];
+  skippedStageIds: string[];
+  stageSummaries: StageSummary[];
+  summary: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgentRunStagePlan {
+  stageId: string;
+  type: AgentRunStageType;
+  backend: AgentBackendId;
+  dependsOn: string[];
+  reason: string;
+  ownership?: AgentRunStageOwnership;
+}
+
 export interface AgentRunStageOwnership {
   workspaceId: string;
   paths?: string[];
@@ -154,7 +186,7 @@ export interface AgentRunStageRecord {
   id: string;
   runId: string;
   type: AgentRunStageType;
-  backend: BackendType;
+  backend: AgentBackendId;
   status: AgentRunStageStatus;
   dependsOn: string[];
   ownership?: AgentRunStageOwnership;
@@ -174,9 +206,10 @@ export interface AgentRunStageMetrics {
 }
 
 export interface AgentRunStageAudit {
-  backend: BackendType;
+  backend: AgentBackendId;
   backendKind?: 'model_provider' | 'agent_backend';
   backendTier?: 'strategic' | 'experimental' | 'compatibility' | 'legacy';
+  executionPath?: 'agent_backend_adapter' | 'legacy_supervisor';
   inputSummary: string;
   outputSummary?: string;
   fallbackFromStageId?: string;
@@ -186,7 +219,7 @@ export interface AgentRunStageAudit {
 
 export interface BackendSessionRef {
   id: string;
-  backend: BackendType;
+  backend: AgentBackendId;
   scope: 'session' | 'stage';
   resumable: boolean;
   metadata?: Record<string, unknown>;
@@ -228,7 +261,7 @@ export interface WorkspaceFacts {
 export interface StageSummary {
   runId: string;
   stageId: string;
-  backend: BackendType;
+  backend: AgentBackendId;
   summary: string;
   filesChanged: string[];
   testsRun: string[];
@@ -248,6 +281,7 @@ export interface BackendStageResult {
   risks: string[];
   artifacts: ArtifactRef[];
   nativeSessionRef?: BackendSessionRef;
+  boundaryVerification?: StageBoundaryVerification;
 }
 
 export interface ToolCallSummary {
@@ -276,6 +310,17 @@ export interface ArtifactRef {
   path?: string;
   uri?: string;
   metadata?: Record<string, unknown>;
+}
+
+export interface StageBoundaryVerification {
+  source: 'agent-server';
+  verifiedAt: string;
+  beforeWorkspaceFacts: WorkspaceFacts;
+  afterWorkspaceFacts: WorkspaceFacts;
+  filesChanged: string[];
+  testsRun: TestRunSummary[];
+  artifacts: ArtifactRef[];
+  notes: string[];
 }
 
 export interface AgentContextRef {

@@ -10,6 +10,12 @@ export interface RuntimeModelInput {
   model?: string | null;
   modelProvider?: string | null;
   modelName?: string | null;
+  llmEndpoint?: {
+    baseUrl?: string | null;
+    apiKey?: string | null;
+    modelName?: string | null;
+    provider?: string | null;
+  } | null;
   localDevPolicy?: LocalDevPolicyHint;
 }
 

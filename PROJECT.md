@@ -11,13 +11,11 @@
 - 开发过程中发现新的 TODO，优先追加到本文档。
 
 ## 当前状态
-- `T036`：首版完整 agent-backend adapter（推进中）：首版 strategic backend 只支持 Codex、Claude Code、Gemini 和自研 agent；契约已文档化，后续进入 adapter 原型实现。
-- `T037`：统一上下文与 backend handoff 契约（推进中）：canonical context / handoff / stage result 已文档化，后续进入 run ledger、renderer 和 stage boundary verification 实现。
-- `T038`：Live Backend Benchmark 独立模块（待讨论，暂不实现）：记录需要独立设计 backend 评估与路由打分模块，后续单独深入讨论。
+- `T036`：首版完整 agent-backend adapter（推进中）：首版 strategic backend 只支持 Codex、Claude Code、Gemini 和自研 agent；四类 adapter 原型和真实 runTurn live smoke 脚本已代码化，Codex / Claude Code / 自研 agent 已完成 live plumbing smoke，Gemini SDK module 与 shape preflight 已通过，后续主要补齐 Gemini auth 与真实 Claude/self-hosted LLM endpoint 配置。
 
 ## 已完成任务归档摘要
-- `T001`-`T035`、`T039`、`T040` 已完成或已被后续任务取代；详细任务正文从本文档移除以节约上下文。
-- 关键完成里程碑：通用 runs facade、metadata/audit、context/evaluation 基础字段、proposal store、backend smoke、Hermes/openteam_agent 集成、SDK 化、deployment/workers/tool routing、SSH worker smoke、worker env/proxy 注入、Gemini 源码纳入、agent-backend orchestration 架构、adapter contract、native session/policy 边界、Run/Stage 状态和 context lifecycle 文档。
+- `T001`-`T035`、`T037`-`T041` 已完成或已被后续任务取代；详细任务正文从本文档移除以节约上下文。
+- 关键完成里程碑：通用 runs facade、metadata/audit、context/evaluation 基础字段、proposal store、backend smoke、Hermes/openteam_agent 集成、SDK 化、deployment/workers/tool routing、SSH worker smoke、worker env/proxy 注入、Gemini 源码纳入、agent-backend orchestration 架构、adapter contract、native session/policy 边界、Run/Stage 状态、context lifecycle、canonical handoff、stage boundary verification、orchestrator ledger 文档与代码、multi-stage request opt-in 执行路径、Live Backend Benchmark 设计占位文档。
 
 ---
 
@@ -59,86 +57,46 @@
 - [x] 在 adapter capability 中加入 `structuredEvents/readableState/abortableRun/statusTransparency`。
 - [x] 明确 upstream source isolation 原则：官方 backend 源码只读优先，adapter 逻辑默认写在 AgentServer 侧。
 - [x] 新增 upstream override 登记文档，记录必要官方源码 patch 和官方更新后的重放步骤。
-- [ ] 实现 Codex app-server adapter 原型，优先使用 app-server JSON-RPC，而不是只 spawn CLI 文本流。
-- [ ] 实现 Claude Code agent-backend adapter 原型，优先寻找结构化 protocol/bridge，暴露同样的 normalized event/result。
-- [ ] 实现 Gemini agent-backend adapter 原型，优先使用 SDK/API/app-server 或 schema bridge，覆盖长上下文、多模态和资料整合场景。
-- [ ] 实现自研 agent adapter 原型，用于白盒 context/tool/orchestration 策略实验，并作为状态透明 contract 的参考实现。
-- [ ] 增加 smoke：同一简单代码修改任务分别通过 Codex、Claude Code、Gemini、自研 agent 完成，并输出标准事件。
+- [x] 明确 provider/auth input 例外原则：优先外围 adapter/env/config 适配；若代价明显不成比例，可做小 upstream patch，但必须在 override 文档登记文件、目的和重放步骤。
+- [x] 新增 strategic agent backend profile registry，区分 current capabilities 与 target capabilities，避免把 CLI bridge 误标成 production-complete backend。
+- [x] 新增 agent backend adapter registry/factory，只暴露已实现 adapter，并通过 profile 显式标注 prototype / production-complete 差异。
+- [x] 实现 Codex app-server adapter 原型，优先使用 app-server JSON-RPC，而不是只 spawn CLI 文本流。
+- [x] 实现 Claude Code agent-backend adapter 原型，当前通过 AgentServer supervisor normalized event stream 暴露 structured event/result/readState，仍标记为 partial bridge。
+- [x] 实现 Gemini agent-backend adapter 原型，优先使用 SDK/API/app-server 或 schema bridge，覆盖长上下文、多模态和资料整合场景。
+- [x] 实现自研 agent adapter 原型，用于白盒 context/tool/orchestration 策略实验，并作为状态透明 contract 的参考实现。
+- [x] 增加 strategic agent-backend adapter contract smoke，验证 Codex、Claude Code、Gemini、自研 agent 均已注册并暴露 structured capabilities。
+- [x] 增加 live adapter preflight：检查 adapter 注册、Codex app-server 命令、Claude/self-hosted LLM endpoint、Gemini SDK 可解析性。
+- [x] 将 live adapter smoke 升级为真实 `runTurn` 任务：创建临时 workspace，提交 handoff，消费标准事件，要求 `stage-result`。
+- [x] live adapter smoke 支持 `AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS` 按 backend 子集验证，便于逐个补齐本机 runtime。
+- [x] Codex adapter 将 app-server backend error 标准化为 failed `stage-result`，避免真实 turn 失败时只表现为 timeout。
+- [x] Codex adapter 支持 app-server server-initiated approval request：转成 `permission-request`，无交互式审批决策面时默认安全拒绝，避免静默吞掉或卡死。
+- [x] Codex live preflight 增加 auth/status probe：`getAuthStatus` 不请求 token，只记录 `authMethod/requiresOpenaiAuth`，避免把真实 `runTurn` 流错误误判为未登录。
+- [x] Codex live preflight 增加 account/model/rate-limit probe：当前机器显示 `chatgpt` Pro、可见模型列表、rate limit 未触顶，且不输出 email/token。
+- [x] Codex adapter 支持 `AGENT_SERVER_CODEX_MODEL` / `AGENT_SERVER_CODEX_EFFORT` turn override，并在 failed `stage-result` 中附加脱敏 app-server stderr tail。
+- [x] Codex adapter 将 app-server `willRetry: true` error 视为非终止 running 状态，让官方 stream retry / HTTP fallback 自己完成；只有非重试 error 或 failed `turn/completed` 才终止 stage。
+- [x] Codex isolated live smoke 已在 `gpt-5.4` 下通过真实 `runTurn`：创建 thread、执行 tool-call/tool-result、消费标准事件并返回 completed `stage-result`。
+- [x] Gemini adapter 在 `tsx` 开发态支持 vendored SDK source fallback，并提供 `prepare:gemini-sdk-dev` 重放本地 workspace link / generate / policy asset 准备步骤。
+- [x] Gemini live preflight 增加 auth input probe：检查 `GEMINI_API_KEY`、`GOOGLE_API_KEY`、`GOOGLE_APPLICATION_CREDENTIALS`、`~/.gemini/oauth_creds.json` 是否存在，不输出密钥内容。
+- [x] Gemini live preflight 增加 SDK shape probe：验证 `GeminiCliAgent` constructor 与 `session.sendStream(prompt, signal)` 仍符合 adapter contract，提前发现上游 SDK 结构变化。
+- [x] 复核 Gemini upstream build 阻塞：`npm run prepare:gemini-sdk-dev` 可完成 dev fallback 准备，但官方 core/sdk build 仍被 `packages/core/src/code_assist/oauth2.ts` 的 TS4111 错误阻塞；已记录在 upstream override 文档中，暂不修改官方源码。
+- [x] live adapter preflight 支持临时 smoke LLM endpoint：`AGENT_SERVER_ADAPTER_PREFLIGHT_SMOKE_LLM=1` 可验证 Claude Code bridge / 自研 agent 的 endpoint plumbing，不依赖本机真实 `3888` 服务。
+- [x] live adapter preflight 与 adapter runtime 使用同一套 `AGENT_SERVER_ADAPTER_LLM_BASE_URL/API_KEY/MODEL/PROVIDER` 环境变量覆盖语义；可在不修改 `openteam.json` 的情况下验证真实 Claude Code / 自研 agent endpoint。
+- [x] 增加 strict readiness preflight：`npm run check:agent-backend-adapters:strict` 会把 warning 也视为未就绪，用于最终判定真实 runtime/凭据是否已补齐。
+- [x] 增加一键最终 readiness gate：`npm run check:agent-backend-adapters:ready` 先跑 strict preflight，未就绪时跳过耗时 live smoke；就绪后用 Codex isolated live smoke 覆盖 Codex，再对剩余已选择 backend 跑 live smoke，并尊重 `AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS` 子集选择。
+- [x] readiness gate 支持 dry-run 计划检查：`AGENT_SERVER_ADAPTER_READINESS_DRY_RUN=1 npm run check:agent-backend-adapters:ready` 只打印将执行的步骤，避免每次调整子集逻辑都真实启动 backend。
+- [x] 新增 `docs/agent-backend-readiness.md`，集中记录本机 runtime/凭据配置、子集 readiness、dry-run 和最终完成门禁。
+- [x] 新增 `examples/agent-backend-readiness.env.example`，提供真实 endpoint、Gemini auth、Codex model 和 readiness 子集配置模板，不包含密钥。
+- [x] live adapter smoke 支持临时 smoke LLM endpoint：`AGENT_SERVER_LIVE_ADAPTER_SMOKE_LLM=1` 会为 supervisor path 注入临时 OpenAI-compatible endpoint 并重启 runtime supervisor，Claude Code bridge / 自研 agent 已可完成真实 `runTurn` plumbing smoke。
+- [x] Codex live smoke 支持临时隔离 `CODEX_HOME`：`AGENT_SERVER_LIVE_ADAPTER_ISOLATED_CODEX_HOME=1` 会复制 auth/config 到临时目录但不复制 sqlite 状态库，用于排查官方更新后的本地 state migration 问题。
+- [ ] 补齐本机真实 backend runtime/凭据后让 live adapter smoke 全绿：同一简单代码修改任务分别通过 Codex、Claude Code、Gemini、自研 agent 完成，并输出标准事件；最终门禁运行 `npm run check:agent-backend-adapters:ready`。
+- [ ] 修复当前真实环境 Claude/self-hosted live 缺口：启动/配置可用 OpenAI-compatible LLM endpoint，供 Claude Code bridge 和自研 agent 使用；可通过 `openteam.json` 或 `AGENT_SERVER_ADAPTER_LLM_BASE_URL/API_KEY/MODEL` 覆盖配置，若只验证 adapter plumbing，可先运行 `npm run check:agent-backend-adapters:smoke-llm`。
+- [ ] 修复当前 Gemini auth 缺口：SDK dist/source fallback 和 shape preflight 已可用，但当前机器缺少 `GEMINI_API_KEY` / `GOOGLE_API_KEY` / `GOOGLE_APPLICATION_CREDENTIALS` / `/Users/zhangyanggao/.gemini/oauth_creds.json`，因此 Gemini live `runTurn` 还不能完成。
 
 #### 异常发现
 - Codex SDK 的高层能力适合做完整 agent backend，但不适合作为现有 model provider 的简单替换。
 - 完整 agent backend 的 fallback 语义不同于普通 model provider：执行中途静默切换 backend 可能破坏工具状态和 workspace 状态。
-- Gemini 源码已纳入 `server/backend/gemini`，但还没有接入 AgentServer backend catalog / launcher / adapter。
+- Claude Code 当前 adapter 仍是 partial bridge：能复用现有 native runtime 和 normalized events，但还没有一等 SDK/RPC 级 abort/resume/full native state。
+- 当前机器 live smoke 阻塞项：Codex app-server preflight、auth/account/model/rate-limit probe 已通过，隔离 `CODEX_HOME` 后不再出现 sqlite migration warning，`gpt-5.4` 已通过真实 isolated live smoke；`gpt-5.2-codex` 在当前 ChatGPT 账号下由官方 app-server 返回 unsupported，不作为 AgentServer adapter 缺口。Claude Code / 自研 agent 在 smoke LLM 模式下已可完成 live `runTurn` plumbing smoke，真实配置仍取决于可用 OpenAI-compatible endpoint，可通过 `openteam.json` 或 `AGENT_SERVER_ADAPTER_LLM_*` 环境变量提供；Gemini SDK dist/source fallback 与 shape preflight 已可用，live smoke 已推进到缺少 Gemini/Google auth input。Gemini 官方 clean build 仍受上游 TS4111 错误阻塞，但当前不改官方源码。
 
 #### Takeaway
 - SDK/app-server 是 backend adapter 的实现细节；AgentServer 不能把自己的 orchestration 责任交给任何单一 backend。
-
----
-
-### T037
-
-#### 目标说明
-- 建立跨 backend 的统一上下文模型，让多个 agent backend 像同一个 agent 的不同专家角色一样接力工作。
-- AgentServer 持有 canonical session context；每次调用 backend 时生成该 backend 和该阶段专用的 handoff packet。
-- 不依赖复制完整聊天 transcript 来实现“无缝上下文”，而依赖显式状态、workspace diff、测试结果和结构化 handoff。
-
-#### 成功标准
-- 存在 canonical session context schema。
-- 每个 backend stage 结束后必须产生 normalized handoff summary。
-- handoff summary 包含目标、当前状态、已改文件、关键决策、测试状态、风险、下一步建议。
-- 文件系统、git diff、测试输出、artifact、run ledger 是 backend 间共享事实来源。
-- backend 私有 thread/session 只作为加速和连续性手段，不是唯一上下文来源。
-
-#### TODO
-- [x] 定义 `CanonicalSessionContext`：goal、plan、decisions、workspace state、artifacts、backend run records、open questions。
-- [x] 定义 `BackendHandoffPacket`：给下一 backend 的压缩上下文输入。
-- [x] 定义 `BackendStageResult`：filesChanged、diffSummary、toolCalls、testsRun、findings、handoffSummary、nextActions。
-- [x] 明确 handoff 由 AgentServer 生成，backend summary 只作为输入之一。
-- [x] 将 workspace hard facts：git diff、测试输出、artifact refs 纳入 adapter/stage result contract。
-- [x] 增加上下文压缩策略：长 session 优先保留目标、决策、diff/test 事实和未解决风险。
-- [x] 在当前单 backend 执行路径的 run ledger 中记录默认 stage、structured handoff 和 stage result。
-- [x] 实现基础 handoff prompt renderer：当前覆盖 Codex、Claude Code、自研 agent 和通用 backend 指令。
-- [x] 在当前单 stage 边界采集基础 workspace facts：branch、dirty files、git diff stat。
-- [ ] 扩展 handoff prompt renderer：补 Gemini 专用模板和普通 model provider 降级模板。
-- [ ] 增加完整 stage boundary verification：切换 backend 前读取真实 workspace diff、测试状态和 artifact refs，而不是只相信上一 backend 的自然语言总结。
-- [ ] 将单 stage run ledger 扩展为真正的 multi-stage orchestrator ledger。
-
-#### 异常发现
-- backend 之间不能共享隐式记忆；Codex thread 内知道的内容，Claude Code 不一定知道。
-- 聊天历史不是最可靠的跨 backend 状态；workspace、diff、测试和结构化 handoff 更稳定。
-
-#### Takeaway
-- “对外像一个 agent”不是靠单一 backend thread 实现，而是靠 AgentServer 持有统一上下文和显式 handoff。
-
----
-
-### T038
-
-#### 目标说明
-- 记录需要一个独立的 Live Backend Benchmark 模块，但本阶段先不实现。
-- 该模块未来用于按原子能力和应用场景给不同 backend 打分，并把分数作为 orchestrator 路由信号之一。
-- benchmark 需要后续单独设计，因为真实任务默认只用一个 backend 完成以节约 token；系统仍需通过验证结果、用户反馈、抽样 shadow run 和历史 replay 估计其它 backend 的相对能力。
-- 首版 benchmark 设计优先围绕 Codex、Claude Code、Gemini 和自研 agent，不为 experimental / compatibility / legacy backend 扩大首批复杂度。
-
-#### 成功标准
-- 任务板中保留 benchmark 独立模块提醒，避免后续架构推进时忘记。
-- 明确 benchmark 不属于当前 agent-backend adapter 首批实现范围。
-- 明确 benchmark 与 orchestrator 的关系：benchmark 产出能力分数，orchestrator 消费分数，但 orchestrator 不依赖 benchmark 才能启动。
-- 明确 benchmark 首版评分对象只覆盖 strategic backend set。
-- 后续讨论时再展开 taxonomy、score schema、runner、线上反馈和探索策略。
-
-#### TODO
-- [x] 在任务板保留 benchmark 独立模块提醒。
-- [ ] 后续单独开 benchmark 设计任务。
-- [ ] 讨论 benchmark taxonomy：atomic 能力与 scenario 应用场景。
-- [ ] 讨论评分来源：离线基准、真实任务结果、用户反馈、replay、shadow/audit、exploration。
-- [ ] 讨论如何在节约 token 的前提下更新未执行 backend 的相对分。
-- [ ] 讨论 benchmark score 如何进入 orchestrator 路由策略。
-
-#### 异常发现
-- 真实任务每次都让所有 backend 完整执行会浪费 token，并且多个 backend 同时写 workspace 会带来冲突。
-- 单 backend 线上任务只能直接评价“被选中的 backend”；不能直接知道其它 backend 在同一任务上会不会更好。
-- LLM judge 可以辅助评分，但不能替代测试、lint、diff 检查、用户接受率和后续返工率。
-
-#### Takeaway
-- benchmark 应作为独立模块记录和推进；当前架构先为它预留数据与路由接口，具体算法和实现后续再深入讨论。

@@ -5,6 +5,7 @@ import {
   listBackendDescriptors,
   listRegisteredStrategicBackendIds,
   listStrategicAgentBackends,
+  type AgentBackendId,
   type BackendCapabilities,
   type BackendDescriptor,
   type BackendTier,
@@ -34,13 +35,31 @@ import {
   type AgentServerHttpClient,
 } from '../server/agent_server/http-client.js';
 import { AgentServerService } from '../server/agent_server/service.js';
+import {
+  getStrategicAgentBackendProfile,
+  isProductionCompleteAgentBackend,
+  listStrategicAgentBackendProfiles,
+  type AgentBackendImplementationStatus,
+  type AgentBackendTransportKind,
+  type StrategicAgentBackendProfile,
+} from '../server/runtime/agent-backend-profile-registry.js';
+import {
+  hasAgentBackendAdapter,
+  listAvailableAgentBackendAdapters,
+  type AgentBackendAdapterKey,
+  type AvailableAgentBackendAdapter,
+} from '../server/runtime/agent-backend-adapter-registry.js';
 import type {
   AgentManifest,
   AgentRunRecord,
+  AgentRunOrchestratorLedger,
+  AgentRunStagePlan,
+  AgentRunStageRecord,
   AgentRunStreamOptions,
   AgentServerRunRequest,
   AgentServerRunResult,
   CreateAgentRequest,
+  StageBoundaryVerification,
 } from '../server/agent_server/types.js';
 import type { SessionStreamEvent } from '../server/runtime/session-types.js';
 
@@ -217,17 +236,30 @@ export {
   DEFAULT_BACKEND,
   classifyTool,
   createDefaultToolRoutingPolicy,
+  getStrategicAgentBackendProfile,
+  hasAgentBackendAdapter,
   getBackendCapabilities,
+  isProductionCompleteAgentBackend,
+  listAvailableAgentBackendAdapters,
   listRegisteredStrategicBackendIds,
   listStrategicAgentBackends,
+  listStrategicAgentBackendProfiles,
   planToolRoute,
 };
 
 export type {
+  AgentBackendImplementationStatus,
+  AgentBackendAdapterKey,
+  AgentBackendId,
+  AgentBackendTransportKind,
   AgentManifest,
   AgentRunRecord,
+  AgentRunOrchestratorLedger,
+  AgentRunStagePlan,
+  AgentRunStageRecord,
   AgentServerRunRequest,
   AgentServerRunResult,
+  StageBoundaryVerification,
   BackendCapabilities,
   BackendDescriptor,
   BackendTier,
@@ -236,6 +268,8 @@ export type {
   ExecutionBackendKind,
   SessionStreamEvent,
   StrategicAgentBackend,
+  StrategicAgentBackendProfile,
+  AvailableAgentBackendAdapter,
   ToolClassification,
   ToolKind,
   ToolOutputPolicy,

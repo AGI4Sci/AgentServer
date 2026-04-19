@@ -26,22 +26,28 @@
 6. [Upstream Backend Overrides](./upstream-backend-overrides.md)
    记录是否修改了 Codex、Claude Code、Gemini 等官方 backend 源码，以及官方版本更新后需要重放的 patch。
 
-7. [Agent Server Runtime](./agent-server-runtime.md)
+7. [Agent Backend Readiness](./agent-backend-readiness.md)
+   记录 Codex、Claude Code、Gemini、自研 agent 的本机 runtime/凭据就绪检查、子集验证、dry-run 和最终门禁。
+
+8. [Live Backend Benchmark](./backend-benchmark.md)
+   记录后续独立 benchmark 模块的能力分类、评分来源、节约 token 策略，以及它和 orchestrator 的边界。本阶段只设计，不实现。
+
+9. [Agent Server Runtime](./agent-server-runtime.md)
    讲长期 agent 数据目录、session、run、context、maintenance 和恢复接口。
 
-8. [Harness Context Strategy](./context-harness.md)
+10. [Harness Context Strategy](./context-harness.md)
    讲自研/custom backend 内部可以实验的 context 策略。它不是 AgentServer Core 公共协议。
 
-9. [Deployment](./deployment.md)
+11. [Deployment](./deployment.md)
    讲云服务部署时如何分离代码、配置、数据、workspace 和 backend launchers，以及如何 prune 构建产物。
 
-10. [Client Worker](./client-worker.md)
+12. [Client Worker](./client-worker.md)
    讲 Mac workspace 留在用户端、Ubuntu AgentServer 只做服务控制面时的长期 tool router 设计。
 
-11. [Tutorial](./tutorial.md)
+13. [Tutorial](./tutorial.md)
    用代码和 HTTP client 跑一个最小 AgentServer agent。
 
-12. [Project Board](../PROJECT.md)
+14. [Project Board](../PROJECT.md)
    工程任务板在根目录，只记录任务状态和 TODO，不承载架构真相。
 
 ## 文档职责
@@ -54,6 +60,8 @@
 | `context-harness.md` | 自研 backend 的 harness 实验策略 | 所有 backend 的公共协议 |
 | `adapter-contract.md` | backend adapter、stage、capability、handoff、native session、failure contract | 具体 backend 原生协议实现 |
 | `upstream-backend-overrides.md` | 官方 backend 源码 patch 登记和重放线索 | adapter 设计细节 |
+| `agent-backend-readiness.md` | strategic backend 本机 runtime/凭据就绪检查和最终门禁 | 架构决策、benchmark 算法 |
+| `backend-benchmark.md` | 后续 benchmark 模块的设计占位、评分信号和边界 | 当前实现、线上 runner、自动路由策略替换 |
 | `backend-runtime.md` | backend 接入、launcher、supervisor、adapter、smoke 验证 | 对外 API 契约的重复定义 |
 | `agent-server-runtime.md` | agent/session/run/context 数据与 API | backend 原生协议 |
 | `deployment.md` | 服务部署、目录分离、workspace policy、构建产物清理 | backend 内部协议 |
