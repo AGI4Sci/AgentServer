@@ -1,5 +1,6 @@
 import type { SessionOutput, SessionUsage } from '../session-types.js';
 import type { WorkerRunRequest } from '../team-worker-types.js';
+import { normalizeModelProviderUsage } from '../model-provider-usage.js';
 import {
   resolveRuntimeBackendConnection,
   resolveRuntimeBackendConnectionCandidates,
@@ -37,32 +38,6 @@ export function containsUnexecutedToolIntentText(text: string | null | undefined
   const hasCodePreview = /```(?:json|python|bash|sh|shell)\b/i.test(normalized);
   const hasObservedToolOutput = /(?:^|\n)Tool result for |STATUS:\s*(?:success|failure)|exit_code=|stdout:|stderr:|path=\/|status=\d+|根据工具(?:查询|执行|返回)结果|当前工作目录[:：]\s*\/|当前工作目录（`?\//i.test(normalized);
   return !hasObservedToolOutput && (hasPseudoInvocation || (hasToolPlanning && hasCodePreview));
-}
-
-function normalizeChatUsage(raw: any): SessionUsage | undefined {
-  if (!raw || typeof raw !== 'object') {
-    return undefined;
-  }
-  const input =
-    Number(raw.input_tokens ?? raw.prompt_tokens ?? raw.input ?? 0) || 0;
-  const output =
-    Number(raw.output_tokens ?? raw.completion_tokens ?? raw.output ?? 0) || 0;
-  const cacheRead =
-    Number(raw.cache_read_input_tokens ?? raw.cacheRead ?? 0) || 0;
-  const cacheWrite =
-    Number(raw.cache_creation_input_tokens ?? raw.cacheWrite ?? 0) || 0;
-  const total =
-    Number(raw.total_tokens ?? raw.total ?? (input + output + cacheRead + cacheWrite)) || 0;
-  if (input <= 0 && output <= 0 && cacheRead <= 0 && cacheWrite <= 0 && total <= 0) {
-    return undefined;
-  }
-  return {
-    input,
-    output,
-    total,
-    cacheRead: cacheRead || undefined,
-    cacheWrite: cacheWrite || undefined,
-  };
 }
 
 function extractTextParts(content: unknown): string {
@@ -284,7 +259,10 @@ export async function runOpenAICompatibleStreamingChat(params: {
             break;
           }
           const result = extractChatCompletionText(payload?.choices?.[0]);
-          const usage = normalizeChatUsage(payload?.usage);
+          const usage = normalizeModelProviderUsage(payload?.usage, {
+            provider: candidate.provider,
+            model,
+          });
           if (!result) {
             failureMessages.push(`${model} @ ${baseUrl}: response did not contain assistant text.`);
             break;
@@ -339,7 +317,10 @@ export async function runOpenAICompatibleStreamingChat(params: {
             retryProviderError = providerError;
             break;
           }
-          const usage = normalizeChatUsage(payload?.usage);
+          const usage = normalizeModelProviderUsage(payload?.usage, {
+            provider: candidate.provider,
+            model,
+          });
           if (usage) {
             finalUsage = usage;
           }

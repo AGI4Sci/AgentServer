@@ -17,8 +17,9 @@ import type {
   BackendSessionRef,
   BackendStageResult,
 } from '../../agent_server/types.js';
-import type { SessionStreamEvent } from '../session-types.js';
+import type { SessionStreamEvent, SessionUsage } from '../session-types.js';
 import { applyGeminiAuthEnvAliases } from './gemini-auth-env.js';
+import { normalizeModelProviderUsage } from '../model-provider-usage.js';
 import { resolveModelRuntimeConnection } from '../model-runtime-resolver.js';
 
 type GeminiCliAgentConstructor = new (options: Record<string, unknown>) => {
@@ -124,6 +125,7 @@ export class GeminiSdkAgentBackendAdapter implements AgentBackendAdapter {
     const abortController = new AbortController();
     const finalTextParts: string[] = [];
     const toolCalls: BackendStageResult['toolCalls'] = [];
+    let finalUsage: SessionUsage | undefined;
 
     state.status = 'running';
     state.activeRunId = input.handoff.runId;
@@ -138,6 +140,9 @@ export class GeminiSdkAgentBackendAdapter implements AgentBackendAdapter {
           if (event.type === 'text-delta') {
             finalTextParts.push(event.text);
           }
+          if (event.type === 'usage-update') {
+            finalUsage = event.usage;
+          }
           yield event;
         }
       }
@@ -148,7 +153,7 @@ export class GeminiSdkAgentBackendAdapter implements AgentBackendAdapter {
       yield {
         type: 'stage-result',
         stageId: input.handoff.stageId,
-        result: buildGeminiStageResult(input, 'failed', finalTextParts.join(''), toolCalls, startedAt, [message]),
+        result: buildGeminiStageResult(input, 'failed', finalTextParts.join(''), toolCalls, startedAt, [message], finalUsage),
       };
       return;
     } finally {
@@ -159,7 +164,7 @@ export class GeminiSdkAgentBackendAdapter implements AgentBackendAdapter {
     }
 
     state.status = 'idle';
-    const result = buildGeminiStageResult(input, 'completed', finalTextParts.join(''), toolCalls, startedAt, []);
+    const result = buildGeminiStageResult(input, 'completed', finalTextParts.join(''), toolCalls, startedAt, [], finalUsage);
     state.lastStage = {
       id: input.handoff.stageId,
       runId: input.handoff.runId,
@@ -326,6 +331,13 @@ function normalizeGeminiEvent(
       detail: JSON.stringify(value || {}),
     }];
   }
+  if (type === 'usage') {
+    const usage = normalizeModelProviderUsage(value, {
+      provider: 'gemini',
+      model: readString(value, 'model'),
+    });
+    return usage ? [{ type: 'usage-update', stageId, usage }] : [];
+  }
   if (type === 'error' || type === 'invalid_stream') {
     return [{ type: 'error', stageId, error: JSON.stringify(value || geminiEvent) }];
   }
@@ -342,6 +354,7 @@ function buildGeminiStageResult(
   toolCalls: BackendStageResult['toolCalls'],
   startedAt: number,
   risks: string[],
+  usage?: SessionUsage,
 ): BackendStageResult {
   return {
     status,
@@ -355,6 +368,7 @@ function buildGeminiStageResult(
     nextActions: [],
     risks,
     artifacts: [],
+    usage,
     nativeSessionRef: input.sessionRef,
   };
 }

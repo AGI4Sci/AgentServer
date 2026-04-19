@@ -11,6 +11,7 @@ import {
 } from '../../core/runtime/backend-catalog.js';
 import type { AgentBackendId, BackendType } from '../../core/runtime/backend-catalog.js';
 import type { SessionOutput, SessionStreamEvent } from '../runtime/session-types.js';
+import { mergeModelProviderUsage } from '../runtime/model-provider-usage.js';
 import { runSessionViaSupervisor } from '../runtime/supervisor-session-runner.js';
 import {
   createAgentBackendAdapter,
@@ -344,11 +345,13 @@ function outputFromAdapterStageResult(
     return {
       success: false,
       error: stageResult.finalText || stageResult.handoffSummary || `stage ${stageResult.status}`,
+      usage: stageResult.usage,
     };
   }
   return {
     success: true,
     result: stageResult?.finalText || streamedText.trim() || stageResult?.handoffSummary || '',
+    usage: stageResult?.usage,
   };
 }
 
@@ -2873,6 +2876,7 @@ export class AgentServerService {
       runId,
       role: 'assistant' as const,
       content: assistantContent,
+      usage: output.usage,
       createdAt: nowIso(),
       turnNumber: nextTurnNumber + 1,
     };
@@ -3406,11 +3410,13 @@ export class AgentServerService {
       },
     });
     const lastStage = result.stages[result.stages.length - 1];
+    const usage = mergeModelProviderUsage(result.stages.map((stage) => stage.metrics?.usage || stage.result?.usage));
     const output = result.failureAction
-      ? { success: false as const, error: result.failureAction.reason }
+      ? { success: false as const, error: result.failureAction.reason, usage }
       : {
           success: true as const,
           result: lastStage?.result?.finalText || lastStage?.result?.handoffSummary || '',
+          usage,
         };
     return {
       output,
@@ -3573,6 +3579,7 @@ export class AgentServerService {
         ? (input.stageExecution.adapterStageResult?.risks ?? [])
         : [assistantContent || 'backend returned an error'],
       artifacts: boundaryVerification.artifacts,
+      usage: output.usage,
       nativeSessionRef: input.stageExecution.nativeSessionRef || {
         id: `agent-server:${input.agent.id}:${input.agent.activeSessionId}:${stagePlan.backend}`,
         backend: stagePlan.backend,

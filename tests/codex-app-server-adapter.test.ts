@@ -70,6 +70,30 @@ rl.on('line', (line) => {
     }
     write({ id: message.id, result: { turn: { id: 'turn-1' } } });
     write({ method: 'item/agentMessage/delta', params: { threadId: 'thread-1', turnId: 'turn-1', itemId: 'msg-1', delta: 'policy-ok' } });
+    write({
+      method: 'thread/tokenUsage/updated',
+      params: {
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        tokenUsage: {
+          total: {
+            inputTokens: 123,
+            outputTokens: 45,
+            totalTokens: 168,
+            cachedInputTokens: 7,
+            reasoningOutputTokens: 0,
+          },
+          last: {
+            inputTokens: 123,
+            outputTokens: 45,
+            totalTokens: 168,
+            cachedInputTokens: 7,
+            reasoningOutputTokens: 0,
+          },
+          modelContextWindow: 100000,
+        },
+      },
+    });
     write({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } } });
   }
 });
@@ -138,8 +162,15 @@ rl.on('line', (line) => {
   await adapter.dispose({ sessionRef });
 
   const stageResult = events.find((event) => event.type === 'stage-result');
+  const usageEvent = events.find((event) => event.type === 'usage-update');
+  assert.equal(usageEvent?.usage.input, 123);
+  assert.equal(usageEvent?.usage.output, 45);
+  assert.equal(usageEvent?.usage.cacheRead, 7);
+  assert.equal(usageEvent?.usage.source, 'model-provider');
   assert.equal(stageResult?.result.status, 'completed');
   assert.equal(stageResult?.result.finalText, 'policy-ok');
+  assert.equal(stageResult?.result.usage?.input, 123);
+  assert.equal(stageResult?.result.usage?.output, 45);
   });
 });
 

@@ -14,6 +14,9 @@ export interface SessionUsage {
   total?: number;
   cacheRead?: number;
   cacheWrite?: number;
+  provider?: string;
+  model?: string;
+  source?: 'model-provider';
 }
 
 export interface LocalDevPolicyHint {
@@ -114,6 +117,11 @@ export type SessionStreamEvent =
       type: 'error';
       stageId?: string;
       error: string;
+    } & RuntimeEventBase)
+  | ({
+      type: 'usage-update';
+      stageId?: string;
+      usage: SessionUsage;
     } & RuntimeEventBase)
   | ({
       type: 'result';

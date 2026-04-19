@@ -281,6 +281,7 @@ export interface BackendStageResult {
   nextActions: string[];
   risks: string[];
   artifacts: ArtifactRef[];
+  usage?: SessionOutput['usage'];
   nativeSessionRef?: BackendSessionRef;
   boundaryVerification?: StageBoundaryVerification;
 }
@@ -412,6 +413,7 @@ export interface AgentTurnRecord {
   runId?: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
+  usage?: SessionOutput['usage'];
   createdAt: string;
   turnNumber?: number;
 }

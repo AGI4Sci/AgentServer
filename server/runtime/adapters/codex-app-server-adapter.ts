@@ -17,8 +17,9 @@ import type {
   BackendStageResult,
 } from '../../agent_server/types.js';
 import type { RuntimeModelInput } from '../model-spec.js';
-import type { SessionStreamEvent } from '../session-types.js';
+import type { SessionStreamEvent, SessionUsage } from '../session-types.js';
 import { resolveCodexRuntimeModelSelection } from '../codex-model-runtime.js';
+import { normalizeModelProviderUsage } from '../model-provider-usage.js';
 import { resolveModelRuntimeConnection } from '../model-runtime-resolver.js';
 import { ensureRuntimeSupervisor } from '../supervisor-client.js';
 
@@ -154,6 +155,7 @@ export class CodexAppServerAgentBackendAdapter implements AgentBackendAdapter {
     const startedAt = Date.now();
     const textParts: string[] = [];
     const toolCalls: BackendStageResult['toolCalls'] = [];
+    let finalUsage: SessionUsage | undefined;
     let failureReason: string | undefined;
 
     state.status = 'running';
@@ -194,6 +196,9 @@ export class CodexAppServerAgentBackendAdapter implements AgentBackendAdapter {
         for (const event of normalized) {
           if (event.type === 'text-delta') {
             textParts.push(event.text);
+          }
+          if (event.type === 'usage-update') {
+            finalUsage = event.usage;
           }
           if (event.type === 'error') {
             failureReason = event.error;
@@ -248,6 +253,7 @@ export class CodexAppServerAgentBackendAdapter implements AgentBackendAdapter {
       nextActions: [],
       risks: failureReason ? [appendDiagnostic(failureReason, stderrSummary)] : [],
       artifacts: [],
+      usage: finalUsage,
       nativeSessionRef: input.sessionRef,
     };
 
@@ -610,6 +616,16 @@ function normalizeCodexNotification(
       ];
     }
     return [{ type: 'status', stageId, status: 'completed', message: 'Codex turn completed.' }];
+  }
+  if (method === 'thread/tokenUsage/updated') {
+    const tokenUsage = readObject(params, 'tokenUsage');
+    const total = readObject(tokenUsage, 'total');
+    const last = readObject(tokenUsage, 'last');
+    const usage = normalizeModelProviderUsage(total || last, {
+      provider: readNestedString(params, ['model', 'provider']),
+      model: readNestedString(params, ['model', 'name']),
+    });
+    return usage ? [{ type: 'usage-update', stageId, usage }] : [];
   }
   if (method === 'error') {
     if (readBoolean(params, 'willRetry') === true) {

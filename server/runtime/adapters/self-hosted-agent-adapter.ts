@@ -139,6 +139,7 @@ export class SelfHostedAgentBackendAdapter implements AgentBackendAdapter {
       nextActions: [],
       risks: output.success ? [] : [output.error],
       artifacts: [],
+      usage: output.usage,
       nativeSessionRef: input.sessionRef,
     };
     state.lastStage = {
