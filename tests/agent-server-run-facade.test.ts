@@ -87,6 +87,14 @@ test('runTask maps generic run request to autonomous hosted run', async () => {
       },
     },
     runtime: {
+      modelProvider: 'openai-compatible',
+      modelName: 'cpu-brain-smoke-model',
+      llmEndpoint: {
+        baseUrl: 'http://127.0.0.1:18766/v1',
+        apiKey: 'cpu-brain-smoke-key',
+        modelName: 'cpu-brain-smoke-model',
+        provider: 'openai-compatible',
+      },
       metadata: {
         endpointId: 'local',
       },
@@ -100,6 +108,14 @@ test('runTask maps generic run request to autonomous hosted run', async () => {
   assert.equal(service.captured?.agent.backend, 'codex');
   assert.equal(service.captured?.agent.workingDirectory, '/tmp/generic-workspace');
   assert.equal(service.captured?.message.message, 'Do the task');
+  assert.equal(service.captured?.message.modelProvider, 'openai-compatible');
+  assert.equal(service.captured?.message.modelName, 'cpu-brain-smoke-model');
+  assert.deepEqual(service.captured?.message.llmEndpoint, {
+    baseUrl: 'http://127.0.0.1:18766/v1',
+    apiKey: 'cpu-brain-smoke-key',
+    modelName: 'cpu-brain-smoke-model',
+    provider: 'openai-compatible',
+  });
   assert.deepEqual(service.captured?.message.metadata, {
     project: 'test-project',
     input: {

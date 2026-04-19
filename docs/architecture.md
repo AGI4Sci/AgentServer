@@ -931,6 +931,15 @@ interface RunRequest {
   runtime?: {
     backend?: string;
     model?: string;
+    modelProvider?: string;
+    modelName?: string;
+    llmEndpoint?: {
+      provider?: string;
+      baseUrl: string;
+      apiKey?: string;
+      modelName?: string;
+      authType?: 'apiKey' | 'bearer' | 'none';
+    };
     cwd?: string;
     timeoutMs?: number;
     toolMode?: 'auto' | 'none';
@@ -940,6 +949,8 @@ interface RunRequest {
   metadata?: Record<string, unknown>;
 }
 ```
+
+`runtime.modelProvider`、`runtime.modelName`、`runtime.llmEndpoint` 是 request-scoped 模型连接输入，优先级高于全局环境变量和配置文件候选。它们属于 AgentServer 对 backend 的统一调用契约，而不是新的并行执行链条：request 仍进入同一个 backend adapter / runtime supervisor / tool router / sandbox path，确保上层可以透明选择“CPU 节点做大脑、本地或 GPU 节点做工具执行”的部署形态，同时不丢失 backend 原生 agent loop、工具注册、approval、sandbox、session 和上下文管理能力。
 
 推荐通用响应结构：
 

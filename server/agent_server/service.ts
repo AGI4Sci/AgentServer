@@ -936,6 +936,10 @@ export class AgentServerService {
       },
       message: {
         message: text,
+        model: request.runtime?.model,
+        modelProvider: request.runtime?.modelProvider,
+        modelName: request.runtime?.modelName,
+        llmEndpoint: request.runtime?.llmEndpoint,
         localDevPolicy: request.runtime?.localDevPolicy,
         contextPolicy: request.contextPolicy,
         metadata,
@@ -2806,6 +2810,7 @@ export class AgentServerService {
         constraints,
         openQuestions,
         metadata: request.metadata,
+        runtimeModel: request,
         localDevPolicy: request.localDevPolicy,
         runStartedAtMs,
         maxRetries: orchestratorRequest.maxRetries,
@@ -2833,6 +2838,7 @@ export class AgentServerService {
         message,
         executionContext,
         handoffPacket,
+        runtimeModel: request,
         localDevPolicy: request.localDevPolicy,
         emitEvent,
       });
@@ -3176,6 +3182,7 @@ export class AgentServerService {
     message: string;
     executionContext: string;
     handoffPacket: BackendHandoffPacket;
+    runtimeModel?: Pick<AgentMessageRequest, 'model' | 'modelProvider' | 'modelName' | 'llmEndpoint'>;
     localDevPolicy?: AgentMessageRequest['localDevPolicy'];
     emitEvent: (event: SessionStreamEvent) => void;
   }): Promise<{
@@ -3294,6 +3301,7 @@ export class AgentServerService {
     constraints: string[];
     openQuestions: string[];
     metadata?: Record<string, unknown>;
+    runtimeModel?: Pick<AgentMessageRequest, 'model' | 'modelProvider' | 'modelName' | 'llmEndpoint'>;
     localDevPolicy?: AgentMessageRequest['localDevPolicy'];
     runStartedAtMs: number;
     maxRetries?: number;
@@ -3327,6 +3335,7 @@ export class AgentServerService {
           message: input.message,
           executionContext: input.executionContext,
           handoffPacket: handoff,
+          runtimeModel: input.runtimeModel,
           localDevPolicy: input.localDevPolicy,
           emitEvent: (event) => {
             stageEvents.push(event);
@@ -3379,6 +3388,7 @@ export class AgentServerService {
     message: string;
     executionContext: string;
     handoffPacket: BackendHandoffPacket;
+    runtimeModel?: Pick<AgentMessageRequest, 'model' | 'modelProvider' | 'modelName' | 'llmEndpoint'>;
     localDevPolicy?: AgentMessageRequest['localDevPolicy'];
     emitEvent: (event: SessionStreamEvent) => void;
   }): Promise<{
@@ -3402,6 +3412,10 @@ export class AgentServerService {
           persistentKey: input.agent.runtimePersistentKey,
           requestId: input.handoffPacket.runId,
           sessionKey: `agent-server:${input.agent.id}:${input.session.id}`,
+          model: input.runtimeModel?.model ?? undefined,
+          modelProvider: input.runtimeModel?.modelProvider ?? undefined,
+          modelName: input.runtimeModel?.modelName ?? undefined,
+          llmEndpoint: input.runtimeModel?.llmEndpoint ?? undefined,
           localDevPolicy: input.localDevPolicy,
         },
         {

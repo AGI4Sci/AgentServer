@@ -1,4 +1,5 @@
 import type { AgentBackendId, BackendType } from '../../core/runtime/backend-catalog.js';
+import type { RuntimeModelInput } from '../runtime/model-spec.js';
 import type { LocalDevPolicyHint, SessionOutput, SessionStreamEvent } from '../runtime/session-types.js';
 
 export type AgentLifecycleStatus = 'active' | 'paused' | 'waiting_user' | 'error';
@@ -867,6 +868,10 @@ export interface CreateSessionRequest {
 
 export interface AgentMessageRequest {
   message: string;
+  model?: RuntimeModelInput['model'];
+  modelProvider?: RuntimeModelInput['modelProvider'];
+  modelName?: RuntimeModelInput['modelName'];
+  llmEndpoint?: RuntimeModelInput['llmEndpoint'];
   localDevPolicy?: LocalDevPolicyHint;
   contextPolicy?: AgentMessageContextPolicy;
   metadata?: Record<string, unknown>;
@@ -934,6 +939,10 @@ export interface AgentServerRunRequest {
   runtime?: {
     backend?: BackendType;
     cwd?: string;
+    model?: RuntimeModelInput['model'];
+    modelProvider?: RuntimeModelInput['modelProvider'];
+    modelName?: RuntimeModelInput['modelName'];
+    llmEndpoint?: RuntimeModelInput['llmEndpoint'];
     localDevPolicy?: LocalDevPolicyHint;
     metadata?: Record<string, unknown>;
   };

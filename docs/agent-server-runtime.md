@@ -82,8 +82,20 @@ const result = await service.runTask({
   input: {
     text: 'Summarize this repository.',
   },
+  runtime: {
+    modelProvider: 'openai-compatible',
+    modelName: 'shared-cpu-brain',
+    llmEndpoint: {
+      provider: 'openai-compatible',
+      baseUrl: 'http://127.0.0.1:18766/v1',
+      apiKey: process.env.AGENT_SERVER_MODEL_API_KEY,
+      modelName: 'shared-cpu-brain',
+    },
+  },
 });
 ```
+
+`runtime.llmEndpoint` 是单次 request 的模型连接覆盖项。它会沿 `runTask` 进入 backend adapter/supervisor，而不是要求调用方预先改全局配置；工具调用、沙箱、approval、session 和事件归一化仍由选中的 backend 原生运行链路负责。
 
 HTTP client 使用：
 

@@ -161,6 +161,14 @@ const result = await agent.runTask(
       console.log(event.type);
     },
     runtime: {
+      modelProvider: 'openai-compatible',
+      modelName: 'shared-cpu-brain',
+      llmEndpoint: {
+        provider: 'openai-compatible',
+        baseUrl: 'http://127.0.0.1:18766/v1',
+        apiKey: process.env.AGENT_SERVER_MODEL_API_KEY,
+        modelName: 'shared-cpu-brain',
+      },
       localDevPolicy: {
         isSourceTask: true,
         maxSteps: 6,
@@ -180,6 +188,8 @@ console.log(result.run.status);
 console.log(result.run.output);
 console.log(result.run.events);
 ```
+
+`runtime.modelProvider`、`runtime.modelName` 和 `runtime.llmEndpoint` are per-request model inputs. They are resolved before `AGENT_SERVER_MODEL_*` environment variables and `openteam.json` endpoint candidates, then passed through the backend adapter/supervisor path so callers can point one request at a shared CPU model service without changing global AgentServer configuration. This does not bypass the selected agent backend: Codex, Claude Code, Gemini, self-hosted, OpenClaw, and Hermes still keep their native loop/tool/sandbox/session behavior as exposed by their adapters.
 
 ## Opt In Multi-Stage Orchestration
 
