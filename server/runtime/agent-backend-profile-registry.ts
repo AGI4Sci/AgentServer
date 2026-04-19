@@ -120,7 +120,7 @@ export const STRATEGIC_AGENT_BACKEND_PROFILES: readonly StrategicAgentBackendPro
     currentCapabilities: FULL_CODE_AGENT_TARGET,
     targetCapabilities: FULL_CODE_AGENT_TARGET,
     modelRuntimeSupport: {
-      modelSelection: 'Codex app-server model selected by explicit adapter option, AGENT_SERVER_CODEX_MODEL, or ModelRuntimeConnection. Codex/OpenAI/ChatGPT-native providers use the upstream native route; OpenAI-compatible endpoints with baseUrl use a Codex custom model provider backed by AgentServer responses bridge.',
+      modelSelection: 'Codex app-server model selected by explicit adapter option, AGENT_SERVER_CODEX_MODEL, or ModelRuntimeConnection. Explicit Codex model keeps the upstream native route; OpenAI-compatible/custom endpoints with baseUrl use a Codex custom model provider backed by AgentServer responses bridge, so model/provider choice is not limited to official Codex account models.',
       authInputs: ['CODEX_HOME auth/config', 'ChatGPT account auth', 'OpenAI auth supported by upstream Codex when configured', 'AGENT_SERVER_MODEL_* / openteam.json OpenAI-compatible endpoint for custom provider route'],
       providerRoutes: [
         {
@@ -136,7 +136,7 @@ export const STRATEGIC_AGENT_BACKEND_PROFILES: readonly StrategicAgentBackendPro
         {
           provider: 'openai-compatible',
           route: 'native-custom-provider',
-          reason: 'When a baseUrl is available, AgentServer registers a Codex custom model provider that targets the responses bridge, preserving Codex app-server loop, tools, approvals, sandbox, sessions, and structured events.',
+          reason: 'When a baseUrl is available, AgentServer registers a Codex custom model provider that targets the responses bridge, preserving Codex app-server loop, native tools, approvals, sandbox, sessions, and structured events.',
         },
       ],
       notes: [
@@ -166,13 +166,13 @@ export const STRATEGIC_AGENT_BACKEND_PROFILES: readonly StrategicAgentBackendPro
     },
     targetCapabilities: FULL_CODE_AGENT_TARGET,
     modelRuntimeSupport: {
-      modelSelection: 'ModelRuntimeConnection.modelName is passed into the Claude Code bridge model argument and OpenAI-compatible env aliases.',
+      modelSelection: 'ModelRuntimeConnection.modelName/baseUrl/apiKey are passed into the Claude Code bridge and OpenAI-compatible env aliases, allowing non-official provider/model choices while keeping native tools first.',
       authInputs: ['AGENT_SERVER_MODEL_*', 'legacy AGENT_SERVER_ADAPTER_LLM_* compatibility env', 'openteam.json llm endpoints'],
       providerRoutes: [
         {
           provider: 'openai-compatible',
           route: 'openai-compatible-bridge',
-          reason: 'Current AgentServer bridge path is wired to an OpenAI-compatible endpoint while preserving normalized tool/status events.',
+          reason: 'Current AgentServer bridge path is wired to an OpenAI-compatible endpoint while preserving native-tool-first behavior and normalized fallback tool/status events.',
         },
         {
           provider: 'anthropic',

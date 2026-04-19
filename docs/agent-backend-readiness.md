@@ -18,16 +18,7 @@ npm run check:agent-backend-adapters:ready
 - Codex 使用 isolated `CODEX_HOME` 跑 live smoke。
 - 其它已选 backend 跑真实 `runTurn` live smoke。
 
-可从 [`examples/agent-backend-readiness.env.example`](../examples/agent-backend-readiness.env.example) 复制本机环境变量模板。不要把真实密钥提交到仓库。
-
-推荐把真实 endpoint 和 auth input 放进本地未提交文件，例如 `.agent-backend-readiness.local.env`：
-
-```bash
-npm run init:agent-backend-readiness-env
-npm run check:agent-backend-adapters:ready
-```
-
-readiness gate 会自动加载当前目录下的 `.agent-backend-readiness.local.env`。也可以显式指定其它路径：
+真实 endpoint 和 auth input 默认从 `openteam.json` 的 `llm` 字段读取；同一份 JSON 也是 AgentServer 运行时配置来源，避免 base URL、model name、API key 分散在多个 env 文件里。临时实验仍可显式指定 env 文件，但 readiness gate 不再自动加载 `.agent-backend-readiness.local.env`：
 
 ```bash
 AGENT_SERVER_ADAPTER_READINESS_ENV_FILE=/absolute/path/to/readiness.local.env \
@@ -36,7 +27,7 @@ AGENT_SERVER_ADAPTER_READINESS_ENV_FILE=/absolute/path/to/readiness.local.env \
 npm run check:agent-backend-adapters:ready
 ```
 
-初始化脚本不会覆盖已存在文件。env 文件只支持简单的 `KEY=value` / `export KEY=value` 行。脚本会先加载 env 文件，再计算 backend 子集；已有 shell 环境变量优先，不会被 env 文件覆盖。日志只输出文件路径和加载数量，不输出密钥值。
+初始化脚本不会覆盖已存在文件。env 文件只支持简单的 `KEY=value` / `export KEY=value` 行。脚本只在显式传入 `AGENT_SERVER_ADAPTER_READINESS_ENV_FILE` 时加载 env 文件；已有 shell 环境变量优先，不会被 env 文件覆盖。日志只输出文件路径和加载数量，不输出密钥值。
 
 ## Backend Subsets
 
@@ -84,16 +75,7 @@ AGENT_SERVER_ADAPTER_READINESS_STEP_TIMEOUT_MS=120000 npm run check:agent-backen
 
 ## Claude Code / Self-Hosted Endpoint
 
-Claude Code bridge 和自研 agent 当前通过 AgentServer supervisor path 使用 OpenAI-compatible LLM endpoint。可以用 `openteam.json` 配置，也可以临时用环境变量覆盖：
-
-```bash
-AGENT_SERVER_MODEL_BASE_URL=http://127.0.0.1:3888/v1 \
-AGENT_SERVER_MODEL_API_KEY=<key> \
-AGENT_SERVER_MODEL_NAME=<model> \
-AGENT_SERVER_MODEL_PROVIDER=openai-compatible \
-AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS=claude-code,self-hosted-agent \
-npm run check:agent-backend-adapters:ready
-```
+Claude Code bridge 和自研 agent 当前通过 AgentServer supervisor path 使用 OpenAI-compatible LLM endpoint。推荐只改 `openteam.json` 的 `llm.baseUrl`、`llm.apiKey`、`llm.model`、`llm.provider`；AgentServer 会把这份 JSON 映射到 runtime 需要的 canonical `AGENT_SERVER_MODEL_*` / OpenAI-compatible env。
 
 旧的 `AGENT_SERVER_ADAPTER_LLM_BASE_URL`、`AGENT_SERVER_ADAPTER_LLM_API_KEY`、`AGENT_SERVER_ADAPTER_LLM_MODEL`、`AGENT_SERVER_ADAPTER_LLM_PROVIDER` 仍作为兼容输入读取；新接入和文档示例只使用 `AGENT_SERVER_MODEL_*`，保证 provider/model/baseUrl/authType 的唯一解析入口是 AgentServer model runtime resolver。
 
@@ -116,7 +98,7 @@ npm run check:agent-backend-adapters:ready:smoke-llm
 - `GOOGLE_APPLICATION_CREDENTIALS`
 - `~/.gemini/oauth_creds.json`
 
-推荐在 `.agent-backend-readiness.local.env` 中使用 `AGENT_SERVER_GEMINI_*` namespaced env。AgentServer adapter 和当前 Gemini upstream auth patch 会在启动 Gemini SDK/CLI 前把它们映射到官方 `GEMINI_API_KEY` / `GOOGLE_API_KEY` / `GOOGLE_APPLICATION_CREDENTIALS` / `GEMINI_CLI_HOME`，避免把全局 shell 环境变成第二套真相源。
+如需真实 Gemini/Google 凭据，优先使用 `openteam.json` 或显式的 `OPENTEAM_CONFIG_PATH` 管理本机配置；临时环境变量仍可用于一次性验证。AgentServer adapter 和当前 Gemini upstream auth patch 会在启动 Gemini SDK/CLI 前把 `AGENT_SERVER_GEMINI_*` 映射到官方 `GEMINI_API_KEY` / `GOOGLE_API_KEY` / `GOOGLE_APPLICATION_CREDENTIALS` / `GEMINI_CLI_HOME`。
 
 配置后运行：
 

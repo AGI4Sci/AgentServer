@@ -136,14 +136,14 @@ for (const backend of BACKEND_CATALOG) {
         name: `${backend.label} Tool Smoke`,
         backend: backend.id,
         workspace,
-        systemPrompt: 'You are a backend tool smoke-test agent. Use tools exactly as requested.',
+        systemPrompt: 'You are a backend smoke-test agent. Prefer native backend tools; use AgentServer fallback tools only when native tools cannot perform the action.',
         reconcileExisting: true,
         metadata: {
           smoke: 'agent-server-backend-tools',
         },
       },
       input: {
-        text: 'Use the list_dir tool on "." and then answer with a one-line summary of the files you saw.',
+        text: 'Inspect "." with your native filesystem/listing tool first. If native tools are unavailable, use the AgentServer list_dir fallback. Then answer with a one-line summary of the files you saw.',
         metadata: {
           expectedTool: 'list_dir',
         },
@@ -160,11 +160,21 @@ for (const backend of BACKEND_CATALOG) {
       },
     });
 
+    if (result.run.status !== 'completed') {
+      throw new Error(`run did not complete: status=${result.run.status} output=${result.run.output.error || result.run.output.result || ''}`);
+    }
+
     const toolEvents = result.run.events.filter((event) => event.type === 'tool-call' || event.type === 'tool-result');
-    const sawListDirCall = toolEvents.some((event) => event.type === 'tool-call' && event.toolName === 'list_dir');
-    const sawListDirResult = toolEvents.some((event) => event.type === 'tool-result' && event.toolName === 'list_dir');
-    if (!sawListDirCall || !sawListDirResult) {
-      throw new Error(`missing list_dir tool events; saw=${toolEvents.map((event) => `${event.type}:${event.toolName}`).join(', ') || 'none'}`);
+    if (backend.id === 'codex') {
+      if (toolEvents.length === 0 || !result.run.output.result?.trim()) {
+        throw new Error(`codex native backend produced no observable tool/output events; saw=${toolEvents.map((event) => `${event.type}:${event.toolName}`).join(', ') || 'none'}`);
+      }
+    } else {
+      const sawListDirCall = toolEvents.some((event) => event.type === 'tool-call' && event.toolName === 'list_dir');
+      const sawListDirResult = toolEvents.some((event) => event.type === 'tool-result' && event.toolName === 'list_dir');
+      if (!sawListDirCall || !sawListDirResult) {
+        throw new Error(`missing list_dir tool events; saw=${toolEvents.map((event) => `${event.type}:${event.toolName}`).join(', ') || 'none'}`);
+      }
     }
 
     results.push({

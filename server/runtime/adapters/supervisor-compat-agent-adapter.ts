@@ -270,7 +270,8 @@ export class SupervisorCompatAgentBackendAdapter implements AgentBackendAdapter 
 function renderCompatContext(label: string, input: RunBackendTurnInput): string {
   return [
     `You are running as the ${label} ecosystem backend inside AgentServer.`,
-    'Use your native backend loop and tools when available.',
+    'Use your native backend loop and tools first when available.',
+    'Only use AgentServer-provided fallback tools when the native backend cannot perform the action directly.',
     'Treat the handoff packet as the canonical cross-backend context for this stage.',
     'This backend is an ecosystem/compatibility entry point, so do not assume strategic routing ownership unless explicitly requested.',
     '',

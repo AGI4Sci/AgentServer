@@ -233,7 +233,8 @@ export class ClaudeCodeBridgeAgentBackendAdapter implements AgentBackendAdapter 
 function renderClaudeCodeContext(input: RunBackendTurnInput): string {
   return [
     'You are running as the Claude Code strategic backend inside AgentServer.',
-    'Use your native coding loop, tools, approval model, and workspace editing behavior.',
+    'Use your native coding loop, tools, approval model, and workspace editing behavior first.',
+    'Only use AgentServer-provided fallback tools when the native backend cannot perform the action directly.',
     'Treat the handoff packet as the canonical cross-backend context for this stage.',
     '',
     input.handoff.stageInstructions,

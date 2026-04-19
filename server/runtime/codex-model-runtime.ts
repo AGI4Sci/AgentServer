@@ -78,6 +78,16 @@ export function resolveCodexRuntimeModelSelection(params: {
   const explicitCodexModel = trim(params.explicitCodexModel);
   const inputModelName = trim(params.input?.modelName);
   const inputRuntimeModelName = resolveRuntimeModelName(params.input?.model);
+
+  if (explicitCodexModel) {
+    return {
+      model: explicitCodexModel,
+      modelProvider: isCodexNativeProvider(params.connection.provider) ? params.connection.provider || null : null,
+      configArgs: [],
+      route: 'native',
+    };
+  }
+
   const customProvider = buildCodexCustomProviderConfigArgs(params.connection);
 
   if (customProvider.modelProvider) {
@@ -86,15 +96,6 @@ export function resolveCodexRuntimeModelSelection(params: {
       modelProvider: customProvider.modelProvider,
       configArgs: customProvider.configArgs,
       route: 'custom-provider',
-    };
-  }
-
-  if (explicitCodexModel) {
-    return {
-      model: explicitCodexModel,
-      modelProvider: params.connection.provider || null,
-      configArgs: [],
-      route: 'native',
     };
   }
 

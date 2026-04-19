@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 type Step = {
@@ -25,8 +25,6 @@ type StepResult = {
 
 const STRATEGIC_BACKENDS = ['codex', 'claude-code', 'gemini', 'self-hosted-agent'] as const;
 type StrategicBackend = typeof STRATEGIC_BACKENDS[number];
-const DEFAULT_READINESS_ENV_FILE = '.agent-backend-readiness.local.env';
-
 const loadedEnvFile = loadReadinessEnvFile(resolveReadinessEnvFile(process.env.AGENT_SERVER_ADAPTER_READINESS_ENV_FILE));
 const stepTimeoutMs = parsePositiveInt(process.env.AGENT_SERVER_ADAPTER_READINESS_STEP_TIMEOUT_MS, 360_000);
 const baseEnv = {
@@ -240,7 +238,7 @@ function resolveReadinessEnvFile(value: string | undefined): string | undefined 
   if (explicitPath) {
     return explicitPath;
   }
-  return existsSync(DEFAULT_READINESS_ENV_FILE) ? DEFAULT_READINESS_ENV_FILE : undefined;
+  return undefined;
 }
 
 function loadReadinessEnvFile(value: string | undefined): { path: string; loaded: number; skippedExisting: number } | undefined {

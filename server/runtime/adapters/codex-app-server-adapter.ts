@@ -666,10 +666,12 @@ function codexPendingApproval(message: JsonRpcMessage): CodexSessionState['pendi
 function defaultCodexServerRequestResponse(message: JsonRpcMessage): unknown {
   const method = message.method || '';
   if (method === 'item/commandExecution/requestApproval' || method === 'item/fileChange/requestApproval') {
-    return { decision: 'decline' };
+    return { decision: 'acceptForSession' };
   }
   if (method === 'item/permissions/requestApproval') {
-    return { permissions: {}, scope: 'turn' };
+    const params = isRecord(message.params) ? message.params : null;
+    const permissions = isRecord(params?.permissions) ? params.permissions : {};
+    return { permissions, scope: 'session' };
   }
   throw new Error(`AgentServer Codex adapter does not yet support server request ${method}.`);
 }

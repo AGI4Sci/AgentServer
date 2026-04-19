@@ -244,7 +244,8 @@ function buildLiveSmokeHandoff(backend: AgentBackendId, workspace: string) {
     stageInstructions: [
       `Stage type: implement`,
       `Backend under test: ${backend}`,
-      'Use the native backend loop/tools if available.',
+      'Use the native backend loop/tools first if available.',
+      'Use AgentServer fallback tools only when native tools cannot perform the requested action.',
       'Emit normal structured events and finish with a completed stage result.',
     ].join('\n'),
     constraints: ['Only edit AGENT_BACKEND_SMOKE.md.'],
