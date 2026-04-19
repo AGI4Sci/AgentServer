@@ -20,7 +20,8 @@
 
 - `server/backend/codex`：无 AgentServer adapter 必需 patch。
 - `server/backend/gemini`：无 AgentServer adapter 必需 patch；存在 upstream clean build debt，见 Gemini 小节。
-- `server/backend/claude_code` / `server/backend/claude_code_rust`：无 AgentServer adapter 必需 patch。
+- `server/backend/claude_code`：有一个 AgentServer bridge patch，见 Claude Code 小节。
+- `server/backend/claude_code_rust`：无 AgentServer adapter 必需 patch。
 - AgentServer adapter 代码均放在 `server/runtime/adapters/`、`server/runtime/agent-backend-*.ts`、`scripts/`、`tests/` 和 `docs/` 等 AgentServer 侧路径中。
 
 允许考虑 upstream patch 的典型情况：
@@ -101,7 +102,7 @@ packages/core/src/code_assist/oauth2.ts(80,41): error TS4111: Property 'GEMINI_O
 
 ### Claude Code
 
-当前状态：无 AgentServer adapter 必需的官方源码 patch。
+当前状态：`server/backend/claude_code` 有 AgentServer bridge patch；`server/backend/claude_code_rust` 暂无必需 patch。
 
 本地路径：
 
@@ -110,9 +111,32 @@ server/backend/claude_code
 server/backend/claude_code_rust
 ```
 
+已修改文件：
+
+```text
+server/backend/claude_code/openteam-runtime.ts
+```
+
+目的：
+
+- 让 AgentServer supervisor bridge 直接从 Claude Code runtime 获得结构化 `tool-result` 事件，而不是只能看到 `tool-call` 和最终文本。
+- 给 OpenAI-compatible LLM request 增加官方 runtime 内部 hard timeout，避免上游 endpoint 或 curl/fetch 卡住时只能依赖 AgentServer 外层 readiness timeout。
+- 通过 `OPENTEAM_CLAUDE_CODE_LLM_TIMEOUT_MS` 或 `LLM_REQUEST_TIMEOUT_MS` 覆盖默认 120 秒 timeout。
+
+重放步骤：
+
+- 重新同步 Claude Code upstream 后，检查 `openteam-runtime.ts` 是否仍存在并仍作为 AgentServer bridge entry 使用。
+- 若仍需要本地 bridge，重放以下改动：新增 LLM request timeout helper；curl 调用增加 `--max-time`；fetch 调用接入 `AbortController`；工具执行后输出 `{ type: 'tool-result', toolName, detail, output }` JSONL。
+- 重放后运行：
+
+```bash
+node --import tsx --test tests/claude-code-bridge-adapter.test.ts
+AGENT_SERVER_ADAPTER_READINESS_STEP_TIMEOUT_MS=120000 AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS=claude-code npm run check:agent-backend-adapters:ready
+```
+
 说明：
 
 - 当前 Claude Code agent-backend adapter 通过 AgentServer supervisor bridge 暴露 normalized events/result/readState，adapter 逻辑不写入 Claude Code checkout。
-- 若未来为了获得一等 SDK/RPC 级 abort/resume/full native state 而必须修改 Claude Code 官方源码，需在下方新增记录。
+- 这个 patch 仍不是最终的一等 SDK/RPC；长期目标仍是把 Claude Code 的 SDK/control/event protocol 作为 AgentServer backend adapter 的正式入口。
 
 待记录模板同上。

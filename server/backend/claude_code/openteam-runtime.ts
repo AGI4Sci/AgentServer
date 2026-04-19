@@ -38,6 +38,7 @@ type ChatCompletionMessage = {
 };
 
 const ENV_REF_PATTERN = /\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-(.*?))?\}/g;
+const DEFAULT_LLM_REQUEST_TIMEOUT_MS = 120_000;
 
 function parseArgValue(flag: string): string | undefined {
   const index = process.argv.indexOf(flag);
@@ -168,6 +169,29 @@ function formatError(error: unknown): string {
   return String(error);
 }
 
+function resolveLlmRequestTimeoutMs(): number {
+  const parsed = Number(process.env.OPENTEAM_CLAUDE_CODE_LLM_TIMEOUT_MS || process.env.LLM_REQUEST_TIMEOUT_MS || '');
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : DEFAULT_LLM_REQUEST_TIMEOUT_MS;
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(`LLM request timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function extractTextParts(content: unknown): string {
   if (typeof content === 'string') {
     return content;
@@ -277,6 +301,7 @@ async function requestChatCompletion(
   model: string,
   messages: ChatCompletionMessage[],
 ): Promise<ChatCompletionResponse> {
+  const timeoutMs = resolveLlmRequestTimeoutMs();
   const requestBody = JSON.stringify({
     model,
     messages,
@@ -284,19 +309,19 @@ async function requestChatCompletion(
   });
 
   try {
-    return await requestChatCompletionWithCurl(url, apiKey, requestBody);
+    return await requestChatCompletionWithCurl(url, apiKey, requestBody, timeoutMs);
   } catch (error) {
     emitStatus('running', `curl request failed, falling back to fetch: ${formatError(error)}`);
   }
 
-  const response = await fetch(url, {
+  const response = await fetchWithTimeout(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${apiKey}`,
     },
     body: requestBody,
-  });
+  }, timeoutMs);
 
   const payload = (await response.json()) as ChatCompletionResponse;
   if (!response.ok) {
@@ -311,7 +336,8 @@ async function requestChatCompletionStream(
   model: string,
   messages: ChatCompletionMessage[],
 ): Promise<{ text: string; usage?: { input: number; output: number; total?: number } }> {
-  const response = await fetch(url, {
+  const timeoutMs = resolveLlmRequestTimeoutMs();
+  const response = await fetchWithTimeout(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -325,7 +351,7 @@ async function requestChatCompletionStream(
         include_usage: true,
       },
     }),
-  });
+  }, timeoutMs);
 
   if (!response.ok) {
     let payload: unknown;
@@ -470,6 +496,12 @@ async function runToolLoop(prompt: string): Promise<void> {
       detail: JSON.stringify(toolCall.args),
     });
     const toolResult = await executeLocalDevPrimitive(toolCall, cwd);
+    emit({
+      type: 'tool-result',
+      toolName: toolCall.toolName,
+      detail: toolResult.ok ? 'success' : 'failure',
+      output: toolResult.output,
+    });
     messages.push({
       role: 'user',
       content: [
@@ -502,12 +534,24 @@ async function requestChatCompletionWithCurl(
   url: string,
   apiKey: string,
   requestBody: string,
+  timeoutMs: number,
 ): Promise<ChatCompletionResponse> {
   return await new Promise<ChatCompletionResponse>((resolve, reject) => {
+    let settled = false;
+    const timeout = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      child.kill('SIGTERM');
+      reject(new Error(`curl LLM request timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
     const child = spawn(
       'curl',
       [
         '-sS',
+        '--max-time',
+        String(Math.max(1, Math.ceil(timeoutMs / 1000))),
         url,
         '-H',
         'Content-Type: application/json',
@@ -525,18 +569,34 @@ async function requestChatCompletionWithCurl(
     let stderr = '';
 
     child.stdout.on('data', (chunk) => {
+      if (settled) {
+        return;
+      }
       stdout += chunk.toString();
     });
 
     child.stderr.on('data', (chunk) => {
+      if (settled) {
+        return;
+      }
       stderr += chunk.toString();
     });
 
     child.on('error', (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
       reject(error);
     });
 
     child.on('close', (code) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
       if (code !== 0) {
         reject(new Error(`curl exited with code ${code}: ${stderr.trim()}`));
         return;
