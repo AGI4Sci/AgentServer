@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 import test from 'node:test';
 
@@ -41,4 +44,32 @@ test('readiness dry-run plans each selected backend independently', async () => 
   assert.match(result.stdout, /PLAN_ENV .*AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS=codex/);
   assert.match(result.stdout, /PLAN_ENV .*AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS=gemini/);
   assert.doesNotMatch(result.stdout, /AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS=codex,gemini/);
+});
+
+test('readiness env file loads local settings without printing secret values', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'agent-readiness-env-'));
+  const envPath = join(dir, 'readiness.local.env');
+  try {
+    await writeFile(envPath, [
+      'AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS=gemini',
+      'AGENT_SERVER_ADAPTER_LLM_API_KEY=super-secret-test-key',
+      'AGENT_SERVER_ADAPTER_LLM_MODEL="env-file-model"',
+      '',
+    ].join('\n'), 'utf8');
+    const result = await execFileAsync('node', ['--import', 'tsx', 'scripts/check-agent-backend-readiness.ts'], {
+      env: {
+        ...process.env,
+        AGENT_SERVER_ADAPTER_READINESS_DRY_RUN: '1',
+        AGENT_SERVER_ADAPTER_READINESS_ENV_FILE: envPath,
+      },
+    });
+
+    assert.match(result.stdout, /selectedBackends=gemini/);
+    assert.match(result.stdout, /envFile=.*loaded=3 skippedExisting=0/);
+    assert.match(result.stdout, /PLAN gemini strict preflight/);
+    assert.doesNotMatch(result.stdout, /super-secret-test-key/);
+    assert.doesNotMatch(result.stdout, /env-file-model/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

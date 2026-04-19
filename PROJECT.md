@@ -90,6 +90,7 @@
 - [x] readiness gate 支持 dry-run 计划检查：`AGENT_SERVER_ADAPTER_READINESS_DRY_RUN=1 npm run check:agent-backend-adapters:ready` 只打印将执行的步骤，避免每次调整子集逻辑都真实启动 backend。
 - [x] 新增 `docs/agent-backend-readiness.md`，集中记录本机 runtime/凭据配置、子集 readiness、dry-run 和最终完成门禁。
 - [x] 新增 `examples/agent-backend-readiness.env.example`，提供真实 endpoint、Gemini auth、Codex model 和 readiness 子集配置模板，不包含密钥。
+- [x] readiness gate 支持 `AGENT_SERVER_ADAPTER_READINESS_ENV_FILE` 加载本地未提交 env 文件，便于真实 endpoint/Gemini auth 补齐后复现全量检查；shell 已有变量优先，日志不输出 secret 值。
 - [x] live adapter smoke 支持临时 smoke LLM endpoint：`AGENT_SERVER_LIVE_ADAPTER_SMOKE_LLM=1` 会为 supervisor path 注入临时 OpenAI-compatible endpoint 并重启 runtime supervisor，Claude Code bridge / 自研 agent 已可完成真实 `runTurn` plumbing smoke。
 - [x] Codex live smoke 支持临时隔离 `CODEX_HOME`：`AGENT_SERVER_LIVE_ADAPTER_ISOLATED_CODEX_HOME=1` 会复制 auth/config 到临时目录但不复制 sqlite 状态库，用于排查官方更新后的本地 state migration 问题。
 - [x] 将 live adapter smoke 默认总超时提高到 300 秒，并支持 `AGENT_SERVER_LIVE_ADAPTER_SMOKE_TIMEOUT_MS` 覆盖，避免 Codex/Gemini 等真实模型在已经持续输出事件时被 120 秒总时限误杀。

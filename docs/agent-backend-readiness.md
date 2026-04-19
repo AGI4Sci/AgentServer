@@ -20,6 +20,15 @@ npm run check:agent-backend-adapters:ready
 
 可从 [`examples/agent-backend-readiness.env.example`](../examples/agent-backend-readiness.env.example) 复制本机环境变量模板。不要把真实密钥提交到仓库。
 
+推荐把真实 endpoint 和 auth input 放进本地未提交文件，例如 `.agent-backend-readiness.local.env`：
+
+```bash
+AGENT_SERVER_ADAPTER_READINESS_ENV_FILE=.agent-backend-readiness.local.env \
+npm run check:agent-backend-adapters:ready
+```
+
+env 文件只支持简单的 `KEY=value` / `export KEY=value` 行。脚本会先加载该文件，再计算 backend 子集；已有 shell 环境变量优先，不会被 env 文件覆盖。日志只输出文件路径和加载数量，不输出密钥值。
+
 ## Backend Subsets
 
 用 `AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS` 只检查一部分 backend：

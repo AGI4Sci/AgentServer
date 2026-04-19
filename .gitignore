@@ -3,6 +3,9 @@ dist/
 coverage/
 .DS_Store
 .instance-id
+.env
+.env.*
+*.local.env
 
 # Local runtime state
 openteam.json

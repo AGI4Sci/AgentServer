@@ -1,4 +1,6 @@
 import { spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 type Step = {
   name: string;
@@ -23,6 +25,7 @@ type StepResult = {
 const STRATEGIC_BACKENDS = ['codex', 'claude-code', 'gemini', 'self-hosted-agent'] as const;
 type StrategicBackend = typeof STRATEGIC_BACKENDS[number];
 
+const loadedEnvFile = loadReadinessEnvFile(process.env.AGENT_SERVER_ADAPTER_READINESS_ENV_FILE);
 const baseEnv = {
   ...process.env,
   AGENT_SERVER_CODEX_MODEL: process.env.AGENT_SERVER_CODEX_MODEL || 'gpt-5.4',
@@ -34,6 +37,9 @@ const plans = selectedBackends.map(createBackendPlan);
 const results: StepResult[] = [];
 
 console.log(`[agent-backend-readiness] selectedBackends=${selectedBackends.join(',')}`);
+if (loadedEnvFile) {
+  console.log(`[agent-backend-readiness] envFile=${loadedEnvFile.path} loaded=${loadedEnvFile.loaded} skippedExisting=${loadedEnvFile.skippedExisting}`);
+}
 
 if (DRY_RUN) {
   console.log('[agent-backend-readiness] dryRun=true');
@@ -169,4 +175,55 @@ function parseSelectedBackends(value: string | undefined): StrategicBackend[] {
     throw new Error(`Unknown strategic backend(s) in AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS: ${invalid.join(', ')}`);
   }
   return [...new Set(parsed)] as StrategicBackend[];
+}
+
+function loadReadinessEnvFile(value: string | undefined): { path: string; loaded: number; skippedExisting: number } | undefined {
+  const filePath = value?.trim();
+  if (!filePath) {
+    return undefined;
+  }
+  const resolvedPath = resolve(filePath);
+  const entries = parseEnvFile(readFileSync(resolvedPath, 'utf8'));
+  let loaded = 0;
+  let skippedExisting = 0;
+  for (const [key, parsedValue] of entries) {
+    if (process.env[key] !== undefined) {
+      skippedExisting += 1;
+      continue;
+    }
+    process.env[key] = parsedValue;
+    loaded += 1;
+  }
+  return { path: resolvedPath, loaded, skippedExisting };
+}
+
+function parseEnvFile(contents: string): Array<[string, string]> {
+  const entries: Array<[string, string]> = [];
+  for (const rawLine of contents.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) {
+      continue;
+    }
+    const normalized = line.startsWith('export ') ? line.slice('export '.length).trimStart() : line;
+    const equalsIndex = normalized.indexOf('=');
+    if (equalsIndex <= 0) {
+      continue;
+    }
+    const key = normalized.slice(0, equalsIndex).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+      continue;
+    }
+    entries.push([key, parseEnvValue(normalized.slice(equalsIndex + 1).trim())]);
+  }
+  return entries;
+}
+
+function parseEnvValue(value: string): string {
+  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+    const unquoted = value.slice(1, -1);
+    return value.startsWith('"')
+      ? unquoted.replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t').replace(/\\"/g, '"').replace(/\\\\/g, '\\')
+      : unquoted;
+  }
+  return value.replace(/\s+#.*$/, '').trim();
 }
