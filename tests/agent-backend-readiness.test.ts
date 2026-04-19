@@ -132,3 +132,22 @@ test('adapter preflight reports readiness placeholder values as missing setup', 
   assert.match(result.stdout, /blockingWarn=1/);
   assert.doesNotMatch(result.stdout, /replace-with-your-gemini-api-key/);
 });
+
+test('adapter preflight maps AgentServer-scoped Gemini auth without leaking secret values', async () => {
+  const result = await execFileAsync('node', ['--import', 'tsx', 'scripts/check-agent-backend-adapters.ts'], {
+    env: {
+      ...process.env,
+      AGENT_SERVER_ADAPTER_PREFLIGHT_STRICT: '1',
+      AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS: 'gemini',
+      AGENT_SERVER_GEMINI_API_KEY: 'agent-server-gemini-secret',
+      GEMINI_API_KEY: '',
+      GOOGLE_API_KEY: '',
+      GOOGLE_APPLICATION_CREDENTIALS: '',
+    },
+  });
+
+  assert.match(result.stdout, /AGENT_SERVER_GEMINI_API_KEY=set/);
+  assert.match(result.stdout, /GEMINI_API_KEY=set/);
+  assert.match(result.stdout, /blockingWarn=0/);
+  assert.doesNotMatch(result.stdout, /agent-server-gemini-secret/);
+});

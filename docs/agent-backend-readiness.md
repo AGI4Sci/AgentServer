@@ -96,10 +96,16 @@ npm run check:agent-backend-adapters:ready:smoke-llm
 
 Gemini preflight 会检查以下任一 auth input：
 
+- `AGENT_SERVER_GEMINI_API_KEY`
+- `AGENT_SERVER_GOOGLE_API_KEY`
+- `AGENT_SERVER_GOOGLE_APPLICATION_CREDENTIALS`
+- `AGENT_SERVER_GEMINI_CLI_HOME`
 - `GEMINI_API_KEY`
 - `GOOGLE_API_KEY`
 - `GOOGLE_APPLICATION_CREDENTIALS`
 - `~/.gemini/oauth_creds.json`
+
+推荐在 `.agent-backend-readiness.local.env` 中使用 `AGENT_SERVER_GEMINI_*` namespaced env。AgentServer adapter 会在启动 Gemini SDK 前把它们映射到官方 `GEMINI_API_KEY` / `GOOGLE_API_KEY` / `GOOGLE_APPLICATION_CREDENTIALS` / `GEMINI_CLI_HOME`，避免把全局 shell 环境变成第二套真相源。
 
 配置后运行：
 
@@ -132,7 +138,7 @@ npm run check:agent-backend-adapters:ready
 npm run check:agent-backend-adapters:ready
 ```
 
-该命令必须完成 strict preflight、Codex isolated live smoke，以及所有已选 backend 的真实 `runTurn` live smoke。完成后仍需保留官方 backend checkout 清洁：AgentServer adapter 逻辑应在 AgentServer 侧维护，不写入 `server/backend/codex`、`server/backend/gemini` 或 `server/backend/claude-code`。
+该命令必须完成 strict preflight、Codex isolated live smoke，以及所有已选 backend 的真实 `runTurn` live smoke。官方 backend checkout 默认保持清洁；确需修改时必须是小 patch，并登记到 `docs/upstream-backend-overrides.md`，方便官方源码更新后重放。
 
 readiness 输出中的 `blockingWarn` 代表会阻止 strict preflight 的 warning；`advisoryWarn` 代表仅供诊断的信息，例如 Codex account/rate-limit 辅助接口暂时不可读。真实 completion 仍要求 `failed=0` 且 `blockingWarn=0`。
 

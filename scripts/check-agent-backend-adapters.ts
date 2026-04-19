@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
-import { homedir, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
@@ -13,6 +13,7 @@ import { listAvailableAgentBackendAdapters } from '../server/runtime/agent-backe
 import { loadOpenTeamConfig } from '../server/utils/openteam-config.js';
 import { startSmokeModelServer, type SmokeModelServer } from './lib/smoke-model-server.js';
 import { resolveAdapterLlmEndpointOverride } from '../server/runtime/adapters/llm-endpoint-override.js';
+import { summarizeGeminiAuthInputs } from '../server/runtime/adapters/gemini-auth-env.js';
 
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
@@ -296,26 +297,12 @@ async function checkGeminiSdkShape(moduleSpecifier: string): Promise<void> {
 }
 
 function checkGeminiAuthInputs(): void {
-  const rawGeminiApiKey = process.env.GEMINI_API_KEY?.trim();
-  const rawGoogleApiKey = process.env.GOOGLE_API_KEY?.trim();
-  const geminiApiKey = Boolean(rawGeminiApiKey && !isPlaceholderValue(rawGeminiApiKey));
-  const googleApiKey = Boolean(rawGoogleApiKey && !isPlaceholderValue(rawGoogleApiKey));
-  const googleCredentialsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim();
-  const googleCredentialsExists = Boolean(googleCredentialsPath && !isPlaceholderValue(googleCredentialsPath) && existsSync(googleCredentialsPath));
-  const geminiCliHome = process.env.GEMINI_CLI_HOME?.trim() || homedir();
-  const oauthPath = join(geminiCliHome, '.gemini', 'oauth_creds.json');
-  const oauthFileExists = existsSync(oauthPath);
+  const summary = summarizeGeminiAuthInputs();
   checks.push({
     backend: 'gemini',
     name: 'gemini-auth-inputs',
-    status: geminiApiKey || googleApiKey || googleCredentialsExists || oauthFileExists ? 'ok' : 'warn',
-    detail: [
-      `GEMINI_API_KEY=${formatAuthInputStatus(rawGeminiApiKey, geminiApiKey)}`,
-      `GOOGLE_API_KEY=${formatAuthInputStatus(rawGoogleApiKey, googleApiKey)}`,
-      `GOOGLE_APPLICATION_CREDENTIALS=${formatPathInputStatus(googleCredentialsPath, googleCredentialsExists)}`,
-      `oauthFile=${oauthFileExists ? 'exists' : 'missing'}:${oauthPath}`,
-      'Set one Gemini/Google auth source before running Gemini live smoke.',
-    ].join(' '),
+    status: summary.ready ? 'ok' : 'warn',
+    detail: summary.detail,
   });
 }
 
@@ -564,23 +551,6 @@ function isPlaceholderValue(value: string | undefined): boolean {
     || normalized.includes('your-api-key')
     || normalized.includes('your-model')
   ));
-}
-
-function formatAuthInputStatus(value: string | undefined, valid: boolean): string {
-  if (valid) {
-    return 'set';
-  }
-  return isPlaceholderValue(value) ? 'placeholder' : 'missing';
-}
-
-function formatPathInputStatus(value: string | undefined, exists: boolean): string {
-  if (!value) {
-    return 'missing';
-  }
-  if (isPlaceholderValue(value)) {
-    return 'placeholder';
-  }
-  return exists ? 'exists' : 'missing-file';
 }
 
 function shellQuote(value: string): string {

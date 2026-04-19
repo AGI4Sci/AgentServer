@@ -18,6 +18,7 @@ import type {
   BackendStageResult,
 } from '../../agent_server/types.js';
 import type { SessionStreamEvent } from '../session-types.js';
+import { applyGeminiAuthEnvAliases } from './gemini-auth-env.js';
 
 type GeminiCliAgentConstructor = new (options: Record<string, unknown>) => {
   session(options?: { sessionId?: string }): GeminiSession;
@@ -74,6 +75,7 @@ export class GeminiSdkAgentBackendAdapter implements AgentBackendAdapter {
   }
 
   async startSession(input: StartBackendSessionInput): Promise<BackendSessionRef> {
+    applyGeminiAuthEnvAliases();
     const { GeminiCliAgent } = await importGeminiSdk(this.options.sdkModule);
     const agent = new GeminiCliAgent({
       cwd: input.workspace,

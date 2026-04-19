@@ -12,7 +12,7 @@
 - 开发过程中发现新的 TODO，优先追加到本文档。
 
 ## 当前状态
-- `T036`：首版完整 agent-backend adapter（推进中）：首版 strategic backend 只支持 Codex、Claude Code、Gemini 和自研 agent；四类 adapter 原型和真实 runTurn live smoke 脚本已代码化。Codex 已通过真实 isolated live readiness；Claude Code 官方 bridge patch 后已通过真实 live readiness；自研 agent 已通过真实 live readiness；Gemini SDK module 与 shape preflight 已通过，真实 readiness 仍等待 Gemini/Google auth input。
+- `T036`：首版完整 agent-backend adapter（推进中）：首版 strategic backend 只支持 Codex、Claude Code、Gemini 和自研 agent；四类 adapter 原型和真实 runTurn live smoke 脚本已代码化。Codex 已通过真实 isolated live readiness；Claude Code 官方 bridge patch 后已通过真实 live readiness；自研 agent 已通过真实 live readiness；Gemini SDK module 与 shape preflight 已通过，AgentServer-scoped Gemini auth env 映射已落地，真实 readiness 仍等待 Gemini/Google 凭据值。
 
 ## 已完成任务归档摘要
 - `T001`-`T035`、`T037`-`T041` 已完成或已被后续任务取代；详细任务正文从本文档移除以节约上下文。
@@ -54,14 +54,14 @@
 - 官方 backend 源码默认保持干净；当前 Claude Code bridge 存在已登记的小 patch，必要 upstream patch 原则、重放线索和 Gemini upstream build debt 已记录在 `docs/upstream-backend-overrides.md`。
 
 #### 剩余 TODO
-- [ ] 配置 Gemini/Google auth input 后跑 Gemini live readiness。可用任一项：`GEMINI_API_KEY`、`GOOGLE_API_KEY`、`GOOGLE_APPLICATION_CREDENTIALS`、`~/.gemini/oauth_creds.json`；配置后运行 `npm run check:agent-backend-adapters:ready:gemini`。
+- [ ] 配置 Gemini/Google auth input 后跑 Gemini live readiness。优先在 `.agent-backend-readiness.local.env` 中使用 `AGENT_SERVER_GEMINI_API_KEY`、`AGENT_SERVER_GOOGLE_API_KEY`、`AGENT_SERVER_GOOGLE_APPLICATION_CREDENTIALS` 或 `AGENT_SERVER_GEMINI_CLI_HOME`，也可使用官方 `GEMINI_API_KEY`、`GOOGLE_API_KEY`、`GOOGLE_APPLICATION_CREDENTIALS`、`~/.gemini/oauth_creds.json`；配置后运行 `npm run check:agent-backend-adapters:ready:gemini`。
 - [ ] 补齐 Gemini 真实凭据后运行 `npm run check:agent-backend-adapters:ready`，要求 Codex、Claude Code、Gemini、自研 agent 全部 `PASSED`。
 
 #### 异常发现
 - Codex SDK 的高层能力适合做完整 agent backend，但不适合作为现有 model provider 的简单替换。
 - 完整 agent backend 的 fallback 语义不同于普通 model provider：执行中途静默切换 backend 可能破坏工具状态和 workspace 状态。
 - Claude Code 当前 adapter 仍是 partial bridge：能复用现有 native runtime 和 normalized events，但还没有一等 SDK/RPC 级 abort/resume/full native state；当前先在官方 `openteam-runtime.ts` bridge 中补了 LLM request timeout 与 `tool-result` JSONL 事件，重放线索记录在 `docs/upstream-backend-overrides.md`。
-- 当前机器 live smoke 阻塞项：readiness gate 已按 backend 独立执行并汇总。Codex app-server preflight、auth/account/model 已通过，rate-limit probe 若因 upstream account usage 接口不可读只作为 advisory warning，隔离 `CODEX_HOME` 后不再出现 sqlite migration warning，`gpt-5.4` 已通过真实 isolated live smoke；`gpt-5.2-codex` 在当前 ChatGPT 账号下由官方 app-server 返回 unsupported，不作为 AgentServer adapter 缺口。Claude Code / 自研 agent 在真实 OpenAI-compatible endpoint 下已通过 live `runTurn` readiness。Gemini SDK dist/source fallback 与 shape preflight 已可用，live smoke 已推进到缺少 Gemini/Google auth input。Gemini 官方 clean build 仍受上游 TS4111 错误阻塞，但当前不改官方源码。
+- 当前机器 live smoke 阻塞项：readiness gate 已按 backend 独立执行并汇总。Codex app-server preflight、auth/account/model 已通过，rate-limit probe 若因 upstream account usage 接口不可读只作为 advisory warning，隔离 `CODEX_HOME` 后不再出现 sqlite migration warning，`gpt-5.4` 已通过真实 isolated live smoke；`gpt-5.2-codex` 在当前 ChatGPT 账号下由官方 app-server 返回 unsupported，不作为 AgentServer adapter 缺口。Claude Code / 自研 agent 在真实 OpenAI-compatible endpoint 下已通过 live `runTurn` readiness。Gemini SDK dist/source fallback 与 shape preflight 已可用，AgentServer adapter 已支持 namespaced Gemini auth env 映射；当前 live smoke 仍缺少真实 Gemini/Google 凭据值。Gemini 官方 clean build 仍受上游 TS4111 错误阻塞，但当前不改官方源码。
 
 #### Takeaway
 - SDK/app-server 是 backend adapter 的实现细节；AgentServer 不能把自己的 orchestration 责任交给任何单一 backend。
