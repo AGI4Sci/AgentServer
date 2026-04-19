@@ -39,6 +39,14 @@ AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS=claude-code,self-hosted-agent npm run c
 AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS=gemini npm run check:agent-backend-adapters:ready
 ```
 
+等价的常用快捷命令：
+
+```bash
+npm run check:agent-backend-adapters:ready:codex
+npm run check:agent-backend-adapters:ready:llm-backends
+npm run check:agent-backend-adapters:ready:gemini
+```
+
 查看 readiness 会执行哪些步骤但不真正启动 backend：
 
 ```bash
@@ -66,10 +74,7 @@ npm run check:agent-backend-adapters:ready
 只验证 plumbing，不依赖真实 endpoint：
 
 ```bash
-AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS=claude-code,self-hosted-agent \
-AGENT_SERVER_ADAPTER_PREFLIGHT_SMOKE_LLM=1 \
-AGENT_SERVER_LIVE_ADAPTER_SMOKE_LLM=1 \
-npm run check:agent-backend-adapters:ready
+npm run check:agent-backend-adapters:ready:smoke-llm
 ```
 
 ## Gemini Auth
