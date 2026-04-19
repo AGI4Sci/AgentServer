@@ -47,6 +47,7 @@
 - Codex app-server、Claude Code bridge、Gemini SDK、自研 agent 四类 strategic adapter 原型已实现，并通过 contract smoke。
 - Run/Stage/handoff/ledger/multi-stage opt-in 执行路径已落地，backend 原生事件可映射为 AgentServer normalized events/result。
 - Readiness/preflight/live smoke 已支持 backend 子集、backend-by-backend 矩阵、strict/advisory warning 区分、Codex isolated `CODEX_HOME`、临时 smoke LLM、可覆盖超时、初始化并自动加载本地未提交 env 文件。
+- Readiness 会识别本地 env 模板中的 `replace-with-*` 占位符，避免把未替换的 key/model 误判为已配置。
 - Readiness 已提供常用快捷脚本：Codex-only、Gemini-only、Claude/self-hosted、Claude/self-hosted smoke LLM plumbing。
 - Codex 已通过真实 isolated live readiness；Claude Code / 自研 agent 已通过 smoke LLM plumbing readiness；Gemini SDK module 与 shape preflight 已通过。
 - 官方 backend 源码目录保持干净；必要 upstream patch 原则和 Gemini upstream build debt 已记录在 `docs/upstream-backend-overrides.md`。

@@ -175,6 +175,17 @@ async function checkLlmEndpoint(): Promise<void> {
     return;
   }
   const results = await Promise.all(endpoints.map(async (endpoint) => {
+    const placeholderFields = [
+      isPlaceholderValue(endpoint.apiKey) ? 'apiKey' : undefined,
+      isPlaceholderValue(endpoint.model) ? 'model' : undefined,
+    ].filter(Boolean);
+    if (placeholderFields.length > 0) {
+      return {
+        ...endpoint,
+        reachable: false,
+        error: `placeholder value(s) still configured for ${placeholderFields.join(',')}`,
+      };
+    }
     const probe = await probeOpenAiCompatibleEndpoint(endpoint.baseUrl, endpoint.apiKey);
     return { ...endpoint, ...probe };
   }));
@@ -285,10 +296,12 @@ async function checkGeminiSdkShape(moduleSpecifier: string): Promise<void> {
 }
 
 function checkGeminiAuthInputs(): void {
-  const geminiApiKey = Boolean(process.env.GEMINI_API_KEY?.trim());
-  const googleApiKey = Boolean(process.env.GOOGLE_API_KEY?.trim());
+  const rawGeminiApiKey = process.env.GEMINI_API_KEY?.trim();
+  const rawGoogleApiKey = process.env.GOOGLE_API_KEY?.trim();
+  const geminiApiKey = Boolean(rawGeminiApiKey && !isPlaceholderValue(rawGeminiApiKey));
+  const googleApiKey = Boolean(rawGoogleApiKey && !isPlaceholderValue(rawGoogleApiKey));
   const googleCredentialsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim();
-  const googleCredentialsExists = Boolean(googleCredentialsPath && existsSync(googleCredentialsPath));
+  const googleCredentialsExists = Boolean(googleCredentialsPath && !isPlaceholderValue(googleCredentialsPath) && existsSync(googleCredentialsPath));
   const geminiCliHome = process.env.GEMINI_CLI_HOME?.trim() || homedir();
   const oauthPath = join(geminiCliHome, '.gemini', 'oauth_creds.json');
   const oauthFileExists = existsSync(oauthPath);
@@ -297,9 +310,9 @@ function checkGeminiAuthInputs(): void {
     name: 'gemini-auth-inputs',
     status: geminiApiKey || googleApiKey || googleCredentialsExists || oauthFileExists ? 'ok' : 'warn',
     detail: [
-      `GEMINI_API_KEY=${geminiApiKey ? 'set' : 'missing'}`,
-      `GOOGLE_API_KEY=${googleApiKey ? 'set' : 'missing'}`,
-      `GOOGLE_APPLICATION_CREDENTIALS=${googleCredentialsPath ? (googleCredentialsExists ? 'exists' : 'missing-file') : 'missing'}`,
+      `GEMINI_API_KEY=${formatAuthInputStatus(rawGeminiApiKey, geminiApiKey)}`,
+      `GOOGLE_API_KEY=${formatAuthInputStatus(rawGoogleApiKey, googleApiKey)}`,
+      `GOOGLE_APPLICATION_CREDENTIALS=${formatPathInputStatus(googleCredentialsPath, googleCredentialsExists)}`,
       `oauthFile=${oauthFileExists ? 'exists' : 'missing'}:${oauthPath}`,
       'Set one Gemini/Google auth source before running Gemini live smoke.',
     ].join(' '),
@@ -540,6 +553,34 @@ function parseSelectedBackends(value: string | undefined): StrategicAgentBackend
     throw new Error(`Unknown strategic backend(s) in AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS: ${invalid.join(', ')}`);
   }
   return [...new Set(parsed)] as StrategicAgentBackend[];
+}
+
+function isPlaceholderValue(value: string | undefined): boolean {
+  const normalized = value?.trim().toLowerCase();
+  return Boolean(normalized && (
+    normalized.startsWith('replace-with-')
+    || normalized.includes('<key>')
+    || normalized.includes('<model>')
+    || normalized.includes('your-api-key')
+    || normalized.includes('your-model')
+  ));
+}
+
+function formatAuthInputStatus(value: string | undefined, valid: boolean): string {
+  if (valid) {
+    return 'set';
+  }
+  return isPlaceholderValue(value) ? 'placeholder' : 'missing';
+}
+
+function formatPathInputStatus(value: string | undefined, exists: boolean): string {
+  if (!value) {
+    return 'missing';
+  }
+  if (isPlaceholderValue(value)) {
+    return 'placeholder';
+  }
+  return exists ? 'exists' : 'missing-file';
 }
 
 function shellQuote(value: string): string {

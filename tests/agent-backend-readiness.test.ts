@@ -100,3 +100,21 @@ test('readiness env initializer creates a local env file without overwriting it'
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('adapter preflight reports readiness placeholder values as missing setup', async () => {
+  const result = await execFileAsync('node', ['--import', 'tsx', 'scripts/check-agent-backend-adapters.ts'], {
+    env: {
+      ...process.env,
+      AGENT_SERVER_ADAPTER_PREFLIGHT_STRICT: '1',
+      AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS: 'gemini',
+      GEMINI_API_KEY: 'replace-with-your-gemini-api-key',
+    },
+  }).catch((error: { stdout?: string; stderr?: string }) => ({
+    stdout: error.stdout || '',
+    stderr: error.stderr || '',
+  }));
+
+  assert.match(result.stdout, /GEMINI_API_KEY=placeholder/);
+  assert.match(result.stdout, /blockingWarn=1/);
+  assert.doesNotMatch(result.stdout, /replace-with-your-gemini-api-key/);
+});
