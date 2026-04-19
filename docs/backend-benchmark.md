@@ -26,6 +26,8 @@ self-hosted-agent
 
 experimental、compatibility、legacy backend 可以被显式调用，但不进入首版 benchmark 复杂度。
 
+OpenClaw 和 Hermes Agent 可作为 ecosystem entry backend 单独记录对照样本，用来观察迁移流量、用户任务类型和真实成功率；这些数据不应自动影响 strategic routing，除非后续明确把某个 backend 晋升到 strategic set。
+
 ## 能力分类
 
 Benchmark 需要同时记录原子能力和应用场景。

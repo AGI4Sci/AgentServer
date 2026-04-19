@@ -18,9 +18,11 @@ vi.mock('./settings.js', () => ({
 describe('validateAuthMethod', () => {
   beforeEach(() => {
     vi.stubEnv('GEMINI_API_KEY', undefined);
+    vi.stubEnv('AGENT_SERVER_GEMINI_API_KEY', undefined);
     vi.stubEnv('GOOGLE_CLOUD_PROJECT', undefined);
     vi.stubEnv('GOOGLE_CLOUD_LOCATION', undefined);
     vi.stubEnv('GOOGLE_API_KEY', undefined);
+    vi.stubEnv('AGENT_SERVER_GOOGLE_API_KEY', undefined);
   });
 
   afterEach(() => {
@@ -48,6 +50,13 @@ describe('validateAuthMethod', () => {
     },
     {
       description:
+        'should return null for USE_GEMINI if AGENT_SERVER_GEMINI_API_KEY is set',
+      authType: AuthType.USE_GEMINI,
+      envs: { AGENT_SERVER_GEMINI_API_KEY: 'agent-server-test-key' },
+      expected: null,
+    },
+    {
+      description:
         'should return an error message for USE_GEMINI if GEMINI_API_KEY is not set',
       authType: AuthType.USE_GEMINI,
       envs: {},
@@ -70,6 +79,13 @@ describe('validateAuthMethod', () => {
         'should return null for USE_VERTEX_AI if GOOGLE_API_KEY is set',
       authType: AuthType.USE_VERTEX_AI,
       envs: { GOOGLE_API_KEY: 'test-api-key' },
+      expected: null,
+    },
+    {
+      description:
+        'should return null for USE_VERTEX_AI if AGENT_SERVER_GOOGLE_API_KEY is set',
+      authType: AuthType.USE_VERTEX_AI,
+      envs: { AGENT_SERVER_GOOGLE_API_KEY: 'agent-server-google-key' },
       expected: null,
     },
     {

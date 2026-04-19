@@ -21,6 +21,26 @@ export type AgentBackendTransportKind =
   | 'direct_harness'
   | 'cli_bridge';
 
+export type AgentBackendProviderRoute =
+  | 'native'
+  | 'native-custom-provider'
+  | 'openai-compatible-bridge'
+  | 'unsupported'
+  | 'pending';
+
+export interface AgentBackendProviderRuntimeRoute {
+  provider: string;
+  route: AgentBackendProviderRoute;
+  reason: string;
+}
+
+export interface AgentBackendModelRuntimeSupport {
+  modelSelection: string;
+  authInputs: string[];
+  providerRoutes: AgentBackendProviderRuntimeRoute[];
+  notes: string[];
+}
+
 export interface StrategicAgentBackendProfile {
   id: StrategicAgentBackend;
   runtimeBackendId?: BackendType;
@@ -31,6 +51,7 @@ export interface StrategicAgentBackendProfile {
   fallbackTransport: AgentBackendTransportKind[];
   currentCapabilities: AgentBackendCapabilities;
   targetCapabilities: AgentBackendCapabilities;
+  modelRuntimeSupport: AgentBackendModelRuntimeSupport;
   upstreamSourcePolicy: 'isolated' | 'patch-required';
   upstreamOverrideDoc: string;
   notes: string[];
@@ -98,6 +119,30 @@ export const STRATEGIC_AGENT_BACKEND_PROFILES: readonly StrategicAgentBackendPro
     fallbackTransport: ['cli_bridge'],
     currentCapabilities: FULL_CODE_AGENT_TARGET,
     targetCapabilities: FULL_CODE_AGENT_TARGET,
+    modelRuntimeSupport: {
+      modelSelection: 'Codex app-server model selected by explicit adapter option, AGENT_SERVER_CODEX_MODEL, or ModelRuntimeConnection. Codex/OpenAI/ChatGPT-native providers use the upstream native route; OpenAI-compatible endpoints with baseUrl use a Codex custom model provider backed by AgentServer responses bridge.',
+      authInputs: ['CODEX_HOME auth/config', 'ChatGPT account auth', 'OpenAI auth supported by upstream Codex when configured', 'AGENT_SERVER_MODEL_* / openteam.json OpenAI-compatible endpoint for custom provider route'],
+      providerRoutes: [
+        {
+          provider: 'codex-chatgpt',
+          route: 'native',
+          reason: 'Primary app-server route; preserves Codex native thread, approval, sandbox, and structured events.',
+        },
+        {
+          provider: 'openai',
+          route: 'native',
+          reason: 'Allowed when upstream Codex account/config exposes the model through its native provider path.',
+        },
+        {
+          provider: 'openai-compatible',
+          route: 'native-custom-provider',
+          reason: 'When a baseUrl is available, AgentServer registers a Codex custom model provider that targets the responses bridge, preserving Codex app-server loop, tools, approvals, sandbox, sessions, and structured events.',
+        },
+      ],
+      notes: [
+        'Model selection is resolved through ModelRuntimeConnection. Non-native provider/model input without an executable baseUrl is accepted by AgentServer but is not forced into the Codex native account path.',
+      ],
+    },
     upstreamSourcePolicy: 'isolated',
     upstreamOverrideDoc: 'docs/upstream-backend-overrides.md#codex',
     notes: [
@@ -120,6 +165,25 @@ export const STRATEGIC_AGENT_BACKEND_PROFILES: readonly StrategicAgentBackendPro
       readableState: true,
     },
     targetCapabilities: FULL_CODE_AGENT_TARGET,
+    modelRuntimeSupport: {
+      modelSelection: 'ModelRuntimeConnection.modelName is passed into the Claude Code bridge model argument and OpenAI-compatible env aliases.',
+      authInputs: ['AGENT_SERVER_MODEL_*', 'legacy AGENT_SERVER_ADAPTER_LLM_* compatibility env', 'openteam.json llm endpoints'],
+      providerRoutes: [
+        {
+          provider: 'openai-compatible',
+          route: 'openai-compatible-bridge',
+          reason: 'Current AgentServer bridge path is wired to an OpenAI-compatible endpoint while preserving normalized tool/status events.',
+        },
+        {
+          provider: 'anthropic',
+          route: 'pending',
+          reason: 'Target native provider route should be exposed through an SDK/RPC boundary rather than a separate opaque CLI path.',
+        },
+      ],
+      notes: [
+        'Provider/model input is centralized through ModelRuntimeConnection; unsupported providers must fail or remain pending instead of silently inventing a second env/config chain.',
+      ],
+    },
     upstreamSourcePolicy: 'isolated',
     upstreamOverrideDoc: 'docs/upstream-backend-overrides.md#claude-code',
     notes: [
@@ -156,6 +220,35 @@ export const STRATEGIC_AGENT_BACKEND_PROFILES: readonly StrategicAgentBackendPro
       multimodalInput: true,
       longContext: true,
     },
+    modelRuntimeSupport: {
+      modelSelection: 'Gemini SDK receives AGENT_SERVER_GEMINI_MODEL, explicit adapter option model, or a ModelRuntimeConnection modelName only for Gemini-native providers.',
+      authInputs: ['AGENT_SERVER_GEMINI_API_KEY', 'AGENT_SERVER_GOOGLE_API_KEY', 'AGENT_SERVER_GOOGLE_APPLICATION_CREDENTIALS', 'AGENT_SERVER_GEMINI_CLI_HOME', 'official Gemini/Google env and oauth file'],
+      providerRoutes: [
+        {
+          provider: 'gemini',
+          route: 'native',
+          reason: 'Native Gemini SDK route preserves long-context/multimodal/session behavior.',
+        },
+        {
+          provider: 'google',
+          route: 'native',
+          reason: 'Mapped to the same Gemini/Google auth and SDK path.',
+        },
+        {
+          provider: 'vertex',
+          route: 'native',
+          reason: 'Supported through Google ADC/service-account style auth inputs when configured.',
+        },
+        {
+          provider: 'openai-compatible',
+          route: 'unsupported',
+          reason: 'OpenAI-compatible model names are intentionally not passed into Gemini SDK; use a bridge backend instead.',
+        },
+      ],
+      notes: [
+        'Gemini remains blocked for live readiness until a real Gemini/Google credential is present on this machine.',
+      ],
+    },
     upstreamSourcePolicy: 'isolated',
     upstreamOverrideDoc: 'docs/upstream-backend-overrides.md#gemini',
     notes: [
@@ -179,6 +272,25 @@ export const STRATEGIC_AGENT_BACKEND_PROFILES: readonly StrategicAgentBackendPro
       statusTransparency: 'partial',
     },
     targetCapabilities: SELF_HOSTED_TARGET,
+    modelRuntimeSupport: {
+      modelSelection: 'ModelRuntimeConnection.modelName/baseUrl/apiKey are injected into the self-hosted OpenAI-compatible harness.',
+      authInputs: ['AGENT_SERVER_MODEL_*', 'legacy AGENT_SERVER_ADAPTER_LLM_* compatibility env', 'openteam.json llm endpoints'],
+      providerRoutes: [
+        {
+          provider: 'openai-compatible',
+          route: 'openai-compatible-bridge',
+          reason: 'White-box harness currently consumes AgentServer-managed OpenAI-compatible runtime configuration.',
+        },
+        {
+          provider: 'custom',
+          route: 'openai-compatible-bridge',
+          reason: 'Custom endpoints are valid when they expose the OpenAI-compatible surface expected by the harness.',
+        },
+      ],
+      notes: [
+        'Self-hosted agent is the reference harness for context/tool/orchestration policy rather than a black-box native provider.',
+      ],
+    },
     upstreamSourcePolicy: 'isolated',
     upstreamOverrideDoc: 'docs/upstream-backend-overrides.md',
     notes: [
@@ -196,6 +308,12 @@ export function listStrategicAgentBackendProfiles(): StrategicAgentBackendProfil
     fallbackTransport: [...profile.fallbackTransport],
     currentCapabilities: { ...profile.currentCapabilities },
     targetCapabilities: { ...profile.targetCapabilities },
+    modelRuntimeSupport: {
+      ...profile.modelRuntimeSupport,
+      authInputs: [...profile.modelRuntimeSupport.authInputs],
+      providerRoutes: profile.modelRuntimeSupport.providerRoutes.map((route) => ({ ...route })),
+      notes: [...profile.modelRuntimeSupport.notes],
+    },
     notes: [...profile.notes],
   }));
 }

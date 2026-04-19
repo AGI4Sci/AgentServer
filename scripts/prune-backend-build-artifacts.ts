@@ -6,8 +6,6 @@ const backendDir = join(root, 'server', 'backend');
 
 const DEFAULT_PRUNE_PATHS = [
   'codex/codex-rs/target',
-  'claude_code_rust/target',
-  'zeroclaw/target',
   'hermes_agent/web/node_modules',
   'hermes_agent/**/__pycache__',
   'openclaw/.next',

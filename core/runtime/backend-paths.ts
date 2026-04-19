@@ -3,12 +3,10 @@ import { join } from 'path';
 
 export type ManagedBackendName =
   | 'claude_code'
-  | 'claude_code_rust'
   | 'codex'
   | 'hermes_agent'
   | 'openclaw'
-  | 'runtime_supervisor'
-  | 'zeroclaw';
+  | 'runtime_supervisor';
 
 export function getBackendRootDir(backend: ManagedBackendName): string {
   return join(process.cwd(), 'server', 'backend', backend);

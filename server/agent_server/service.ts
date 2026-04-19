@@ -3601,7 +3601,7 @@ export class AgentServerService {
       audit: {
         backend: input.backend,
         backendKind: hasAgentBackendAdapter(input.backend) ? 'agent_backend' : undefined,
-        backendTier: hasAgentBackendAdapter(input.backend) ? 'strategic' : undefined,
+        backendTier: this.describeExecutionBackend(input.backend).tier,
         inputSummary: excerpt(input.message, 500),
         outputSummary: excerpt(error, 500),
         failureReason: error,

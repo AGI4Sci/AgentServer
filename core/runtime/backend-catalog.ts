@@ -1,11 +1,9 @@
 export const BACKEND_IDS = [
   'openteam_agent',
   'claude-code',
-  'claude-code-rust',
   'codex',
   'hermes-agent',
   'openclaw',
-  'zeroclaw',
 ] as const;
 
 export type BackendType = (typeof BACKEND_IDS)[number];
@@ -37,7 +35,7 @@ export interface BackendCapabilities {
 export interface BackendDescriptor {
   id: BackendType;
   label: string;
-  family: 'openteam' | 'claude-code' | 'codex' | 'hermes' | 'openclaw' | 'zeroclaw';
+  family: 'openteam' | 'claude-code' | 'codex' | 'hermes' | 'openclaw';
   tier: BackendTier;
   kind: ExecutionBackendKind;
   executables: readonly string[];
@@ -71,22 +69,6 @@ export const BACKEND_CATALOG: readonly BackendDescriptor[] = [
     capabilities: {
       persistentSession: true,
       permissionRequest: true,
-      interrupt: true,
-      toolInputStreaming: false,
-      nativeToolUse: true,
-      managedLauncher: true,
-    },
-  },
-  {
-    id: 'claude-code-rust',
-    label: 'Claude Code Rust',
-    family: 'claude-code',
-    tier: 'compatibility',
-    kind: 'agent_backend',
-    executables: ['openteam_claude_code_rust'],
-    capabilities: {
-      persistentSession: true,
-      permissionRequest: false,
       interrupt: true,
       toolInputStreaming: false,
       nativeToolUse: true,
@@ -141,25 +123,9 @@ export const BACKEND_CATALOG: readonly BackendDescriptor[] = [
       managedLauncher: true,
     },
   },
-  {
-    id: 'zeroclaw',
-    label: 'ZeroClaw',
-    family: 'zeroclaw',
-    tier: 'legacy',
-    kind: 'agent_backend',
-    executables: ['openteam_zeroclaw'],
-    capabilities: {
-      persistentSession: true,
-      permissionRequest: false,
-      interrupt: true,
-      toolInputStreaming: false,
-      nativeToolUse: true,
-      managedLauncher: true,
-    },
-  },
 ] as const;
 
-export const DEFAULT_BACKEND: BackendType = 'claude-code';
+export const DEFAULT_BACKEND: BackendType = 'codex';
 
 export function isBackendType(value: unknown): value is BackendType {
   return typeof value === 'string' && BACKEND_IDS.includes(value as BackendType);

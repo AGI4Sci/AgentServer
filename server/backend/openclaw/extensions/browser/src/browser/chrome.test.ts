@@ -8,9 +8,12 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { WebSocketServer } from "ws";
 import {
   decorateOpenClawProfile,
+  diagnoseChromeCdp,
   ensureProfileCleanExit,
   findChromeExecutableMac,
   findChromeExecutableWindows,
+  formatChromeCdpDiagnostic,
+  getChromeWebSocketUrl,
   isChromeCdpReady,
   isChromeReachable,
   resolveBrowserExecutableForPlatform,
@@ -20,6 +23,7 @@ import {
   DEFAULT_OPENCLAW_BROWSER_COLOR,
   DEFAULT_OPENCLAW_BROWSER_PROFILE_NAME,
 } from "./constants.js";
+import { BrowserCdpEndpointBlockedError } from "./errors.js";
 
 type StopChromeTarget = Parameters<typeof stopOpenClawChrome>[0];
 
@@ -310,22 +314,77 @@ describe("browser chrome helpers", () => {
     await expect(isChromeReachable("http://127.0.0.1:12345", 50)).resolves.toBe(false);
   });
 
-  it("blocks private CDP probes when strict SSRF policy is enabled", async () => {
-    const fetchSpy = vi.fn().mockRejectedValue(new Error("should not be called"));
+  it("diagnoses /json/version responses that omit the websocket URL", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ Browser: "Chrome/Mock" }),
+      } as unknown as Response),
+    );
+
+    await expect(diagnoseChromeCdp("http://127.0.0.1:12345", 50, 50)).resolves.toMatchObject({
+      ok: false,
+      code: "missing_websocket_debugger_url",
+      cdpUrl: "http://127.0.0.1:12345",
+    });
+  });
+
+  it("allows loopback CDP probes while still blocking non-loopback private targets in strict SSRF mode", async () => {
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ webSocketDebuggerUrl: "ws://127.0.0.1/devtools" }),
+      } as unknown as Response)
+      .mockRejectedValue(new Error("should not be called"));
     vi.stubGlobal("fetch", fetchSpy);
 
     await expect(
       isChromeReachable("http://127.0.0.1:12345", 50, {
         dangerouslyAllowPrivateNetwork: false,
       }),
-    ).resolves.toBe(false);
+    ).resolves.toBe(true);
     await expect(
-      isChromeReachable("ws://127.0.0.1:19999", 50, {
+      isChromeReachable("http://169.254.169.254:12345", 50, {
         dangerouslyAllowPrivateNetwork: false,
       }),
     ).resolves.toBe(false);
 
-    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("blocks cross-host websocket pivots returned by /json/version in strict SSRF mode", async () => {
+    const server = createServer((req, res) => {
+      if (req.url === "/json/version") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            webSocketDebuggerUrl: "ws://169.254.169.254:9222/devtools/browser/pivot",
+          }),
+        );
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      server.listen(0, "127.0.0.1", () => resolve());
+      server.once("error", reject);
+    });
+
+    try {
+      const addr = server.address() as AddressInfo;
+      await expect(
+        getChromeWebSocketUrl(`http://127.0.0.1:${addr.port}`, 50, {
+          dangerouslyAllowPrivateNetwork: false,
+          allowedHostnames: ["127.0.0.1"],
+        }),
+      ).rejects.toBeInstanceOf(BrowserCdpEndpointBlockedError);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   it("reports cdpReady only when Browser.getVersion command succeeds", async () => {
@@ -374,6 +433,39 @@ describe("browser chrome helpers", () => {
         await expect(isChromeCdpReady(baseUrl, 300, 150)).resolves.toBe(false);
       },
     });
+  });
+
+  it("diagnoses stale websocket command channels with the discovered websocket URL", async () => {
+    await withMockChromeCdpServer({
+      wsPath: "/devtools/browser/stale-diagnostic",
+      onConnection: (wss) => wss.on("connection", (_ws) => {}),
+      run: async (baseUrl) => {
+        const diagnostic = await diagnoseChromeCdp(baseUrl, 300, 150);
+        expect(diagnostic).toMatchObject({
+          ok: false,
+          code: "websocket_health_command_timeout",
+        });
+        expect(diagnostic.wsUrl).toMatch(/\/devtools\/browser\/stale-diagnostic$/);
+      },
+    });
+  });
+
+  it("formats diagnostics with redacted CDP credentials", () => {
+    const formatted = formatChromeCdpDiagnostic({
+      ok: false,
+      code: "websocket_handshake_failed",
+      cdpUrl: "https://user:pass@browserless.example.com?token=supersecret123",
+      wsUrl: "wss://user:pass@browserless.example.com/devtools/browser/1?token=supersecret123",
+      message: "connect ECONNREFUSED browserless.example.com",
+      elapsedMs: 12,
+    });
+
+    expect(formatted).toContain("websocket_handshake_failed");
+    expect(formatted).toContain("https://browserless.example.com/?token=***");
+    expect(formatted).toContain("wss://browserless.example.com/devtools/browser/1?token=***");
+    expect(formatted).not.toContain("user");
+    expect(formatted).not.toContain("pass");
+    expect(formatted).not.toContain("supersecret123");
   });
 
   it("probes WebSocket URLs via handshake instead of HTTP", async () => {

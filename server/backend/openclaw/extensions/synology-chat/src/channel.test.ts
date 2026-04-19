@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createPluginSetupWizardStatus } from "../../../test/helpers/plugins/setup-wizard.js";
 import type { ResolvedSynologyChatAccount } from "./types.js";
 
 function makeSecurityAccount(
@@ -34,15 +35,21 @@ vi.mock("./webhook-handler.js", () => ({
   createWebhookHandler: vi.fn(() => vi.fn()),
 }));
 
-const freshChannelModulePath = "./channel.js?channel-test";
-const { createSynologyChatPlugin } = await import(freshChannelModulePath);
+const { createSynologyChatPlugin, synologyChatPlugin } = await import("./channel.js");
+const getSynologyChatSetupStatus = createPluginSetupWizardStatus(synologyChatPlugin);
 
 describe("createSynologyChatPlugin", () => {
   beforeEach(() => {
+    vi.stubEnv("SYNOLOGY_CHAT_TOKEN", "");
+    vi.stubEnv("SYNOLOGY_CHAT_INCOMING_URL", "");
     mockSendMessage.mockClear();
     registerSynologyWebhookRouteMock.mockClear();
     mockSendMessage.mockResolvedValue(true);
     registerSynologyWebhookRouteMock.mockImplementation(() => vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   describe("meta", () => {
@@ -115,6 +122,35 @@ describe("createSynologyChatPlugin", () => {
     it("defaultAccountId returns 'default'", () => {
       const plugin = createSynologyChatPlugin();
       expect(plugin.config.defaultAccountId?.({})).toBe("default");
+    });
+
+    it("setup status honors the selected named account", async () => {
+      const status = await getSynologyChatSetupStatus({
+        cfg: {
+          channels: {
+            "synology-chat": {
+              accounts: {
+                ops: {
+                  token: "ops-token",
+                  incomingUrl: "https://nas/ops",
+                },
+                work: {
+                  token: "work-token",
+                },
+              },
+            },
+          },
+        },
+        accountOverrides: {
+          "synology-chat": "work",
+        },
+      });
+
+      expect(status.configured).toBe(false);
+      expect(status.statusLines).toEqual([
+        "Synology Chat: needs token + incoming webhook",
+        "Accounts: 2",
+      ]);
     });
 
     it("formats allowFrom entries through the shared adapter", () => {
@@ -448,11 +484,17 @@ describe("createSynologyChatPlugin", () => {
       abortController: AbortController,
     ) {
       expect(result).toBeInstanceOf(Promise);
-      const resolved = await Promise.race([
-        result,
-        new Promise((r) => setTimeout(() => r("pending"), 50)),
-      ]);
-      expect(resolved).toBe("pending");
+      let settled = false;
+      void result.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      await Promise.resolve();
+      expect(settled).toBe(false);
       abortController.abort();
       await result;
     }
@@ -551,8 +593,6 @@ describe("createSynologyChatPlugin", () => {
 
       const firstPromise = plugin.gateway.startAccount(makeCtx(abortFirst));
       const secondPromise = plugin.gateway.startAccount(makeCtx(abortSecond));
-
-      await new Promise((r) => setTimeout(r, 10));
 
       expect(registerMock).toHaveBeenCalledTimes(2);
       expect(unregisterFirst).not.toHaveBeenCalled();

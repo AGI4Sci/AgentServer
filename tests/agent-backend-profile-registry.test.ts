@@ -18,6 +18,9 @@ test('current strategic profiles do not overstate production completeness', () =
     assert.equal(isProductionCompleteAgentBackend(profile), false, profile.id);
     assert.equal(profile.upstreamSourcePolicy, 'isolated', profile.id);
     assert.match(profile.upstreamOverrideDoc, /^docs\/upstream-backend-overrides\.md/);
+    assert.ok(profile.modelRuntimeSupport.modelSelection.length > 0, profile.id);
+    assert.ok(profile.modelRuntimeSupport.authInputs.length > 0, profile.id);
+    assert.ok(profile.modelRuntimeSupport.providerRoutes.length > 0, profile.id);
   }
 });
 
@@ -31,6 +34,15 @@ test('codex profile prefers structured transport over cli bridge', () => {
   assert.equal(codex.currentCapabilities.readableState, true);
   assert.equal(codex.targetCapabilities.statusTransparency, 'full');
   assert.equal(codex.targetCapabilities.readableState, true);
+  assert.equal(
+    codex.modelRuntimeSupport.providerRoutes.find((route) => route.provider === 'codex-chatgpt')?.route,
+    'native',
+  );
+  assert.equal(
+    codex.modelRuntimeSupport.providerRoutes.find((route) => route.provider === 'openai-compatible')?.route,
+    'native-custom-provider',
+  );
+  assert.match(codex.modelRuntimeSupport.modelSelection, /ModelRuntimeConnection/);
 });
 
 test('claude code profile is a partial bridge prototype with structured events', () => {
@@ -45,6 +57,11 @@ test('claude code profile is a partial bridge prototype with structured events',
   assert.equal(claudeCode.currentCapabilities.abortableRun, false);
   assert.equal(claudeCode.currentCapabilities.statusTransparency, 'partial');
   assert.equal(claudeCode.targetCapabilities.statusTransparency, 'full');
+  assert.equal(
+    claudeCode.modelRuntimeSupport.providerRoutes.find((route) => route.provider === 'openai-compatible')?.route,
+    'openai-compatible-bridge',
+  );
+  assert.match(claudeCode.modelRuntimeSupport.modelSelection, /ModelRuntimeConnection/);
 });
 
 test('gemini profile uses sdk prototype and targets long-context multimodal capability', () => {
@@ -58,4 +75,20 @@ test('gemini profile uses sdk prototype and targets long-context multimodal capa
   assert.equal(gemini.currentCapabilities.multimodalInput, true);
   assert.equal(gemini.targetCapabilities.longContext, true);
   assert.equal(gemini.targetCapabilities.multimodalInput, true);
+  assert.equal(
+    gemini.modelRuntimeSupport.providerRoutes.find((route) => route.provider === 'gemini')?.route,
+    'native',
+  );
+  assert.equal(
+    gemini.modelRuntimeSupport.providerRoutes.find((route) => route.provider === 'openai-compatible')?.route,
+    'unsupported',
+  );
+});
+
+test('self-hosted profile documents the OpenAI-compatible reference harness route', () => {
+  const selfHosted = getStrategicAgentBackendProfile('self-hosted-agent');
+
+  assert.equal(selfHosted.runtimeBackendId, 'openteam_agent');
+  assert.equal(selfHosted.modelRuntimeSupport.providerRoutes[0]?.provider, 'openai-compatible');
+  assert.equal(selfHosted.modelRuntimeSupport.providerRoutes[0]?.route, 'openai-compatible-bridge');
 });

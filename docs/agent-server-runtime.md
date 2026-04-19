@@ -94,7 +94,7 @@ const client = createAgentServerHttpClient('http://127.0.0.1:8080');
 const result = await client.runTask({
   agent: {
     id: 'repo-helper',
-    backend: 'hermes-agent',
+    backend: 'codex',
     workspace: '/absolute/path/to/workspace',
     reconcileExisting: true,
   },

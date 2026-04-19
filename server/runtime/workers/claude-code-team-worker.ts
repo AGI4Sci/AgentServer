@@ -11,6 +11,7 @@ import {
   resolveRuntimeModelName,
 } from '../model-spec.js';
 import { resolveHealthyRuntimeBackendConnection } from './runtime-backend-config.js';
+import { toOpenAICompatibleRuntimeEnv } from '../model-runtime-resolver.js';
 import type { SessionOutput } from '../session-types.js';
 import { formatRuntimeError } from '../session-types.js';
 import { withRuntimeEventProtocol } from '../runtime-event-contract.js';
@@ -587,15 +588,12 @@ export class ClaudeCodeTeamWorker {
       cwd: nextCwd,
       env: {
         ...process.env,
-        API_BASE_URL: runtimeConnection.baseUrl || loadOpenTeamConfig().llm.baseUrl,
-        LLM_BASE_URL: runtimeConnection.baseUrl || loadOpenTeamConfig().llm.baseUrl,
-        OPENAI_BASE_URL: runtimeConnection.baseUrl || loadOpenTeamConfig().llm.baseUrl,
-        LLM_API_KEY: runtimeConnection.apiKey || loadOpenTeamConfig().llm.apiKey,
-        OPENAI_API_KEY: runtimeConnection.apiKey || loadOpenTeamConfig().llm.apiKey,
-        ANTHROPIC_API_KEY: runtimeConnection.apiKey || loadOpenTeamConfig().llm.apiKey,
-        LLM_MODEL_NAME: launchModelName || loadOpenTeamConfig().llm.model,
-        OPENAI_MODEL: launchModelName || loadOpenTeamConfig().llm.model,
-        OPENTEAM_MODEL: launchModelName || loadOpenTeamConfig().llm.model,
+        ...toOpenAICompatibleRuntimeEnv({
+          ...runtimeConnection,
+          baseUrl: runtimeConnection.baseUrl || loadOpenTeamConfig().llm.baseUrl,
+          apiKey: runtimeConnection.apiKey || loadOpenTeamConfig().llm.apiKey,
+          modelName: launchModelName || loadOpenTeamConfig().llm.model,
+        }),
         CLAUDE_CODE_SIMPLE: '1',
         ...(() => {
           const { stateDir } = ensureBackendStateDirs('claude_code', ['tmp', 'home', 'cache', 'config', 'data']);

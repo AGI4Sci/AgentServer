@@ -99,7 +99,8 @@ AgentServer Core
         |
         v
 Backend Harness
-  openteam_agent / claude-code / claude-code-rust / codex / hermes-agent / openclaw / zeroclaw / v9
+  strategic: codex / claude-code / gemini / openteam_agent
+  ecosystem entry: openclaw / hermes-agent
   保持自治
   各自管理内部 system prompt、tool policy、permission、compaction、context strategy
 ```
@@ -640,11 +641,12 @@ docs/context-harness.md
   v9/custom backend harness context 策略；当前第一阶段落点是 openteam_agent
 ```
 
-它和 claude-code、codex、openclaw、zeroclaw 的内部 harness 是同级关系：
+它和 claude-code、codex、gemini、openclaw、hermes-agent 的内部 harness 是同级关系：
 
 ```text
 claude-code backend -> Claude Code harness
 codex backend       -> Codex harness
+gemini backend      -> Gemini harness / SDK
 openteam_agent        -> self-developed harness seed, can evolve toward v9 context design
 ```
 
@@ -704,7 +706,9 @@ Backend Runtime
         |
         v
 Agent Backend
-  openteam_agent / claude-code / claude-code-rust / codex / hermes-agent / openclaw / zeroclaw / v9 / future backend
+  strategic: codex / claude-code / gemini / openteam_agent
+  ecosystem entry: openclaw / hermes-agent
+  future backend
   Owns internal harness, system prompt, tool policy, permission model, compaction
 ```
 
@@ -1282,7 +1286,7 @@ v9 内部可以实现自己的：
 
 但这些属于 v9 backend 内部 harness。
 
-AgentServer 不把这些策略强加给 claude-code、codex、openclaw、zeroclaw。
+AgentServer 不把这些策略强加给 claude-code、codex、gemini、openclaw、hermes-agent。
 
 ### 3.5 Codex / Claude Code 作为完整 agent backend
 
@@ -1439,7 +1443,7 @@ AgentServer 不做：
 - team config 管理
 - skills marketplace
 - VS Code Remote 风格 UI
-- claude-code/codex/openclaw/zeroclaw 内部 harness 替换
+- claude-code/codex/gemini/openclaw/hermes-agent 内部 harness 替换
 - v9 context design 到所有 backend 的强制套用
 - Live Benchmark 首版直接内置到主请求链路
 - 复杂自进化决策

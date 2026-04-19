@@ -35,6 +35,7 @@ const baseEnv = {
 };
 const selectedBackends = parseSelectedBackends(process.env.AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS);
 const DRY_RUN = process.env.AGENT_SERVER_ADAPTER_READINESS_DRY_RUN === '1';
+const GEMINI_REAL_AUTH = process.env.AGENT_SERVER_GEMINI_REQUIRE_REAL_AUTH === '1';
 
 const plans = selectedBackends.map(createBackendPlan);
 const results: StepResult[] = [];
@@ -104,6 +105,9 @@ if (failed.length > 0) {
 }
 
 function createBackendPlan(backend: StrategicBackend): BackendPlan {
+  const geminiFunctionalSmokeEnv = backend === 'gemini' && !GEMINI_REAL_AUTH
+    ? { AGENT_SERVER_GEMINI_FUNCTIONAL_SMOKE: '1' }
+    : {};
   return {
     backend,
     preflight: {
@@ -112,6 +116,7 @@ function createBackendPlan(backend: StrategicBackend): BackendPlan {
       args: ['run', 'check:agent-backend-adapters:strict'],
       env: {
         AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS: backend,
+        ...geminiFunctionalSmokeEnv,
       },
     },
     liveSmoke: backend === 'codex'
@@ -127,6 +132,7 @@ function createBackendPlan(backend: StrategicBackend): BackendPlan {
           env: {
             AGENT_SERVER_LIVE_ADAPTER_SMOKE: '1',
             AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS: backend,
+            ...geminiFunctionalSmokeEnv,
           },
         },
   };
@@ -136,6 +142,9 @@ function printPlanStep(step: Step): void {
   console.log(`PLAN ${step.name}: ${step.command} ${step.args.join(' ')}`);
   if (step.env?.AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS) {
     console.log(`PLAN_ENV ${step.name}: AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS=${step.env.AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS}`);
+  }
+  if (step.env?.AGENT_SERVER_GEMINI_FUNCTIONAL_SMOKE) {
+    console.log(`PLAN_ENV ${step.name}: AGENT_SERVER_GEMINI_FUNCTIONAL_SMOKE=${step.env.AGENT_SERVER_GEMINI_FUNCTIONAL_SMOKE}`);
   }
   console.log(`PLAN_TIMEOUT ${step.name}: ${resolveStepTimeoutMs(step)}ms`);
 }

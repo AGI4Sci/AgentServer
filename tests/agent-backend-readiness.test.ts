@@ -60,14 +60,53 @@ test('readiness dry-run exposes per-step hard timeout', async () => {
   assert.match(result.stdout, /PLAN_TIMEOUT claude-code live smoke: 12345ms/);
 });
 
+test('Gemini readiness uses functional smoke without real credentials by default', async () => {
+  const result = await execFileAsync('npm', ['run', 'check:agent-backend-adapters:ready:gemini'], {
+    env: {
+      ...process.env,
+      AGENT_SERVER_GEMINI_API_KEY: '',
+      AGENT_SERVER_GOOGLE_API_KEY: '',
+      GEMINI_API_KEY: '',
+      GOOGLE_API_KEY: '',
+      GOOGLE_APPLICATION_CREDENTIALS: '',
+    },
+  });
+
+  assert.match(result.stdout, /functionalSmoke=true/);
+  assert.match(result.stdout, /PASSED gemini gemini strict preflight/);
+  assert.match(result.stdout, /PASSED gemini gemini live smoke/);
+  assert.match(result.stdout, /events=tool-call,tool-result,text-delta,status,stage-result/);
+});
+
+test('Gemini readiness can require real auth when explicitly requested', async () => {
+  const result = await execFileAsync('npm', ['run', 'check:agent-backend-adapters:ready:gemini'], {
+    env: {
+      ...process.env,
+      AGENT_SERVER_GEMINI_REQUIRE_REAL_AUTH: '1',
+      AGENT_SERVER_GEMINI_API_KEY: '',
+      AGENT_SERVER_GOOGLE_API_KEY: '',
+      GEMINI_API_KEY: '',
+      GOOGLE_API_KEY: '',
+      GOOGLE_APPLICATION_CREDENTIALS: '',
+    },
+  }).catch((error: { stdout?: string; stderr?: string }) => ({
+    stdout: error.stdout || '',
+    stderr: error.stderr || '',
+  }));
+
+  assert.match(result.stdout, /FAILED gemini gemini strict preflight/);
+  assert.match(result.stdout, /SKIPPED gemini gemini live smoke/);
+  assert.doesNotMatch(result.stdout, /functionalSmoke=true/);
+});
+
 test('readiness env file loads local settings without printing secret values', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'agent-readiness-env-'));
   const envPath = join(dir, 'readiness.local.env');
   try {
     await writeFile(envPath, [
       'AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS=gemini',
-      'AGENT_SERVER_ADAPTER_LLM_API_KEY=super-secret-test-key',
-      'AGENT_SERVER_ADAPTER_LLM_MODEL="env-file-model"',
+      'AGENT_SERVER_MODEL_API_KEY=super-secret-test-key',
+      'AGENT_SERVER_MODEL_NAME="env-file-model"',
       '',
     ].join('\n'), 'utf8');
     const result = await execFileAsync('node', ['--import', 'tsx', 'scripts/check-agent-backend-readiness.ts'], {
@@ -99,7 +138,7 @@ test('readiness env initializer creates a local env file without overwriting it'
       },
     });
     assert.match(created.stdout, /created local env file/);
-    assert.match(await readFile(envPath, 'utf8'), /AGENT_SERVER_ADAPTER_LLM_BASE_URL=/);
+    assert.match(await readFile(envPath, 'utf8'), /AGENT_SERVER_MODEL_BASE_URL=/);
 
     await writeFile(envPath, 'GEMINI_API_KEY=keep-me\n', 'utf8');
     const skipped = await execFileAsync('node', ['--import', 'tsx', 'scripts/init-agent-backend-readiness-env.ts'], {

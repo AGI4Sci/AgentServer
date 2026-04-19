@@ -10,11 +10,9 @@ import type { RuntimeEventProtocolVersion } from './runtime-event-contract.js';
 export type WorkerRuntimeType =
   | 'openteam_agent'
   | 'claude-code'
-  | 'claude-code-rust'
   | 'codex'
   | 'hermes-agent'
-  | 'openclaw'
-  | 'zeroclaw';
+  | 'openclaw';
 
 export interface WorkerSessionStatus {
   cacheKey?: string | null;

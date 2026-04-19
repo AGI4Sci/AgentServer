@@ -75,9 +75,6 @@ export interface OpenTeamConfig {
     openclaw: {
       gatewayBasePort: number;
     };
-    zeroclaw: {
-      gatewayBasePort: number;
-    };
     codex: {
       responseStoreLimit: number;
       providerId: string;
@@ -237,9 +234,6 @@ const DEFAULT_OPENTEAM_CONFIG: OpenTeamConfig = {
     },
     openclaw: {
       gatewayBasePort: 18_789,
-    },
-    zeroclaw: {
-      gatewayBasePort: 42_617,
     },
     codex: {
       responseStoreLimit: 256,

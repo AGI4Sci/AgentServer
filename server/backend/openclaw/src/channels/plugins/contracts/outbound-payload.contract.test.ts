@@ -8,26 +8,28 @@ import {
   installZalouserOutboundPayloadContractSuite,
 } from "../../../../test/helpers/channels/outbound-payload-contract.js";
 
-describe("slack outbound payload contract", () => {
-  installSlackOutboundPayloadContractSuite();
-});
+describe("outbound payload contracts", () => {
+  describe("discord", () => {
+    installDiscordOutboundPayloadContractSuite();
+  });
 
-describe("discord outbound payload contract", () => {
-  installDiscordOutboundPayloadContractSuite();
-});
+  describe("imessage", () => {
+    installDirectTextMediaOutboundPayloadContractSuite();
+  });
 
-describe("whatsapp outbound payload contract", () => {
-  installWhatsAppOutboundPayloadContractSuite();
-});
+  describe("slack", () => {
+    installSlackOutboundPayloadContractSuite();
+  });
 
-describe("zalo outbound payload contract", () => {
-  installZaloOutboundPayloadContractSuite();
-});
+  describe("whatsapp", () => {
+    installWhatsAppOutboundPayloadContractSuite();
+  });
 
-describe("zalouser outbound payload contract", () => {
-  installZalouserOutboundPayloadContractSuite();
-});
+  describe("zalo", () => {
+    installZaloOutboundPayloadContractSuite();
+  });
 
-describe("imessage outbound payload contract", () => {
-  installDirectTextMediaOutboundPayloadContractSuite();
+  describe("zalouser", () => {
+    installZalouserOutboundPayloadContractSuite();
+  });
 });

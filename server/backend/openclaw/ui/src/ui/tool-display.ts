@@ -1,3 +1,4 @@
+import SHARED_TOOL_DISPLAY_JSON from "../../../apps/shared/OpenClawKit/Sources/OpenClawKit/Resources/tool-display.json" with { type: "json" };
 import {
   defaultTitle,
   formatToolDetailText,
@@ -6,6 +7,7 @@ import {
   type ToolDisplaySpec as ToolDisplaySpecBase,
 } from "../../../src/agents/tool-display-common.js";
 import type { IconName } from "./icons.ts";
+import { normalizeLowercaseStringOrEmpty } from "./string-coerce.ts";
 
 type ToolDisplaySpec = ToolDisplaySpecBase & {
   icon?: string;
@@ -19,10 +21,6 @@ type SharedToolDisplayConfig = {
   version?: number;
   fallback?: SharedToolDisplaySpec;
   tools?: Record<string, SharedToolDisplaySpec>;
-};
-
-const SHARED_TOOL_DISPLAY_CONFIG: SharedToolDisplayConfig = {
-  fallback: { emoji: "🧩" },
 };
 
 export type ToolDisplay = {
@@ -86,6 +84,7 @@ function convertSpec(spec?: SharedToolDisplaySpec): ToolDisplaySpec {
   };
 }
 
+const SHARED_TOOL_DISPLAY_CONFIG = SHARED_TOOL_DISPLAY_JSON as SharedToolDisplayConfig;
 const FALLBACK = convertSpec(SHARED_TOOL_DISPLAY_CONFIG.fallback ?? { emoji: "🧩" });
 const TOOL_MAP: Record<string, ToolDisplaySpec> = Object.fromEntries(
   Object.entries(SHARED_TOOL_DISPLAY_CONFIG.tools ?? {}).map(([key, spec]) => [
@@ -122,7 +121,7 @@ export function resolveToolDisplay(params: {
   meta?: string;
 }): ToolDisplay {
   const name = normalizeToolName(params.name);
-  const key = name.toLowerCase();
+  const key = normalizeLowercaseStringOrEmpty(name);
   const spec = TOOL_MAP[key];
   const icon = (spec?.icon ?? FALLBACK.icon ?? "puzzle") as IconName;
   const title = spec?.title ?? defaultTitle(name);
@@ -153,9 +152,4 @@ export function resolveToolDisplay(params: {
 
 export function formatToolDetail(display: ToolDisplay): string | undefined {
   return formatToolDetailText(display.detail, { prefixWithWith: true });
-}
-
-export function formatToolSummary(display: ToolDisplay): string {
-  const detail = formatToolDetail(display);
-  return detail ? `${display.label}: ${detail}` : display.label;
 }

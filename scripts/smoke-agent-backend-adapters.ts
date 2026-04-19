@@ -1,7 +1,8 @@
 import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
-import type { StrategicAgentBackend } from '../core/runtime/backend-catalog.js';
+import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import type { AgentBackendId, StrategicAgentBackend } from '../core/runtime/backend-catalog.js';
 import {
   createAgentBackendAdapter,
   listAvailableAgentBackendAdapters,
@@ -17,10 +18,12 @@ const STRATEGIC_BACKENDS: StrategicAgentBackend[] = [
   'gemini',
   'self-hosted-agent',
 ];
+const ECOSYSTEM_BACKENDS = ['hermes-agent', 'openclaw'] as const;
+type SmokeBackend = StrategicAgentBackend | (typeof ECOSYSTEM_BACKENDS)[number];
 const SELECTED_BACKENDS = parseSelectedBackends(process.env.AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS);
 
 type SmokeResult = {
-  backend: StrategicAgentBackend;
+  backend: SmokeBackend;
   status: 'passed' | 'skipped' | 'failed';
   detail: string;
 };
@@ -33,13 +36,18 @@ let isolatedCodexHome: string | undefined;
 
 if (LIVE_MODE && process.env.AGENT_SERVER_LIVE_ADAPTER_SMOKE_LLM === '1') {
   smokeModelServer = await startSmokeModelServer();
-  process.env.AGENT_SERVER_ADAPTER_LLM_BASE_URL = smokeModelServer.baseUrl;
-  process.env.AGENT_SERVER_ADAPTER_LLM_API_KEY = 'agent-server-smoke-key';
-  process.env.AGENT_SERVER_ADAPTER_LLM_MODEL = 'agent-server-smoke-model';
+  process.env.AGENT_SERVER_MODEL_BASE_URL = smokeModelServer.baseUrl;
+  process.env.AGENT_SERVER_MODEL_API_KEY = 'agent-server-smoke-key';
+  process.env.AGENT_SERVER_MODEL_NAME = 'agent-server-smoke-model';
+  process.env.AGENT_SERVER_MODEL_PROVIDER = 'openai-compatible';
   if (SELECTED_BACKENDS.includes('claude-code') || SELECTED_BACKENDS.includes('self-hosted-agent')) {
     const { restartRuntimeSupervisor } = await import('../server/runtime/supervisor-client.js');
     await restartRuntimeSupervisor();
   }
+}
+if (LIVE_MODE && SELECTED_BACKENDS.includes('gemini') && process.env.AGENT_SERVER_GEMINI_FUNCTIONAL_SMOKE === '1') {
+  process.env.AGENT_SERVER_GEMINI_SDK_MODULE = process.env.AGENT_SERVER_GEMINI_SDK_MODULE
+    || pathToFileURL(resolve('scripts/lib/gemini-functional-smoke-sdk.mjs')).href;
 }
 if (LIVE_MODE && SELECTED_BACKENDS.includes('codex') && process.env.AGENT_SERVER_LIVE_ADAPTER_ISOLATED_CODEX_HOME === '1') {
   isolatedCodexHome = await mkdtemp(join(tmpdir(), 'agent-server-codex-home-'));
@@ -63,8 +71,11 @@ for (const backend of SELECTED_BACKENDS) {
   try {
     const adapter = createAgentBackendAdapter(backend);
     const capabilities = await adapter.capabilities();
-    if (adapter.kind !== 'agent_backend' || adapter.tier !== 'strategic') {
+    if (adapter.kind !== 'agent_backend') {
       throw new Error(`unexpected adapter classification kind=${adapter.kind} tier=${adapter.tier}`);
+    }
+    if (isStrategicBackend(backend) && adapter.tier !== 'strategic') {
+      throw new Error(`strategic adapter reported non-strategic tier=${adapter.tier}`);
     }
     if (!capabilities.streamingEvents || !capabilities.structuredEvents || !capabilities.readableState) {
       throw new Error(`adapter does not expose required structured capability: ${JSON.stringify(capabilities)}`);
@@ -94,6 +105,7 @@ for (const backend of SELECTED_BACKENDS) {
         scope: 'stage',
         metadata: {
           smoke: 'agent-backend-adapters',
+          backend,
         },
       }), LIVE_TIMEOUT_MS, `${backend} startSession`);
       startSessionMs = Date.now() - sessionStartedAt;
@@ -181,10 +193,10 @@ const failed = results.filter((result) => result.status === 'failed');
 const passed = results.filter((result) => result.status === 'passed');
 console.log(`SUMMARY mode=${LIVE_MODE ? 'live' : 'contract'} backends=${SELECTED_BACKENDS.join(',')} passed=${passed.length} failed=${failed.length}`);
 if (failed.length > 0) {
-  throw new Error(`${failed.length} strategic agent backend adapter smoke case(s) failed`);
+  throw new Error(`${failed.length} agent backend adapter smoke case(s) failed`);
 }
 
-function parseSelectedBackends(value: string | undefined): StrategicAgentBackend[] {
+function parseSelectedBackends(value: string | undefined): SmokeBackend[] {
   if (!value) {
     return STRATEGIC_BACKENDS;
   }
@@ -195,14 +207,15 @@ function parseSelectedBackends(value: string | undefined): StrategicAgentBackend
   if (parsed.length === 0) {
     return STRATEGIC_BACKENDS;
   }
-  const invalid = parsed.filter((item) => !STRATEGIC_BACKENDS.includes(item as StrategicAgentBackend));
+  const valid = new Set<string>([...STRATEGIC_BACKENDS, ...ECOSYSTEM_BACKENDS]);
+  const invalid = parsed.filter((item) => !valid.has(item));
   if (invalid.length > 0) {
-    throw new Error(`Unknown strategic backend(s) in AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS: ${invalid.join(', ')}`);
+    throw new Error(`Unknown agent backend(s) in AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS: ${invalid.join(', ')}`);
   }
-  return [...new Set(parsed)] as StrategicAgentBackend[];
+  return [...new Set(parsed)] as SmokeBackend[];
 }
 
-function buildLiveSmokeHandoff(backend: StrategicAgentBackend, workspace: string) {
+function buildLiveSmokeHandoff(backend: AgentBackendId, workspace: string) {
   const runId = `live-smoke-${backend}-${Date.now().toString(36)}`;
   const stageId = `${runId}-stage-implement-1`;
   return {
@@ -248,10 +261,14 @@ function buildLiveSmokeHandoff(backend: StrategicAgentBackend, workspace: string
   };
 }
 
+function isStrategicBackend(backend: SmokeBackend): backend is StrategicAgentBackend {
+  return STRATEGIC_BACKENDS.includes(backend as StrategicAgentBackend);
+}
+
 async function collectRunTurnEvents(
   iterable: AsyncIterable<AgentBackendEvent>,
   timeoutMs: number,
-  backend: StrategicAgentBackend,
+  backend: SmokeBackend,
 ): Promise<AgentBackendEvent[]> {
   const iterator = iterable[Symbol.asyncIterator]();
   const events: AgentBackendEvent[] = [];

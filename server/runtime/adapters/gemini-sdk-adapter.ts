@@ -19,6 +19,7 @@ import type {
 } from '../../agent_server/types.js';
 import type { SessionStreamEvent } from '../session-types.js';
 import { applyGeminiAuthEnvAliases } from './gemini-auth-env.js';
+import { resolveModelRuntimeConnection } from '../model-runtime-resolver.js';
 
 type GeminiCliAgentConstructor = new (options: Record<string, unknown>) => {
   session(options?: { sessionId?: string }): GeminiSession;
@@ -77,9 +78,15 @@ export class GeminiSdkAgentBackendAdapter implements AgentBackendAdapter {
   async startSession(input: StartBackendSessionInput): Promise<BackendSessionRef> {
     applyGeminiAuthEnvAliases();
     const { GeminiCliAgent } = await importGeminiSdk(this.options.sdkModule);
+    const modelRuntime = resolveModelRuntimeConnection({
+      model: this.options.model || process.env.AGENT_SERVER_GEMINI_MODEL,
+    });
+    const sdkModel = this.options.model || process.env.AGENT_SERVER_GEMINI_MODEL || (
+      isGeminiNativeProvider(modelRuntime.provider) ? modelRuntime.modelName || undefined : undefined
+    );
     const agent = new GeminiCliAgent({
       cwd: input.workspace,
-      model: this.options.model,
+      model: sdkModel,
       instructions: this.options.instructions,
     });
     const session = agent.session();
@@ -93,6 +100,8 @@ export class GeminiSdkAgentBackendAdapter implements AgentBackendAdapter {
         ...input.metadata,
         sessionId,
         transport: 'gemini-cli-sdk',
+        modelProvider: modelRuntime.provider,
+        modelName: sdkModel,
       },
     };
     this.sessions.set(sessionRef.id, {
@@ -233,6 +242,16 @@ export class GeminiSdkAgentBackendAdapter implements AgentBackendAdapter {
     }
     return state;
   }
+}
+
+function isGeminiNativeProvider(provider: string | null): boolean {
+  const normalized = provider?.trim().toLowerCase();
+  return normalized === 'gemini'
+    || normalized === 'google'
+    || normalized === 'google-gemini'
+    || normalized === 'vertex'
+    || normalized === 'google-vertex'
+    || normalized === 'gcp';
 }
 
 async function importGeminiSdk(moduleName?: string): Promise<{

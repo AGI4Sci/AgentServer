@@ -56,6 +56,14 @@ npm run check:agent-backend-adapters:ready:llm-backends
 npm run check:agent-backend-adapters:ready:gemini
 ```
 
+Gemini readiness 默认验证 AgentServer adapter 功能链路，而不是要求本机有真实 Google/Gemini 凭据。默认路径会启用 `AGENT_SERVER_GEMINI_FUNCTIONAL_SMOKE=1`，使用本地受控 SDK harness 跑通 `startSession`、`runTurn`、结构化事件、`stage-result` 和 `readState`，不访问外部 Google/Gemini 服务。
+
+需要验证真实 Gemini/Google 服务时，显式加：
+
+```bash
+AGENT_SERVER_GEMINI_REQUIRE_REAL_AUTH=1 npm run check:agent-backend-adapters:ready:gemini
+```
+
 查看 readiness 会执行哪些步骤但不真正启动 backend：
 
 ```bash
@@ -79,12 +87,15 @@ AGENT_SERVER_ADAPTER_READINESS_STEP_TIMEOUT_MS=120000 npm run check:agent-backen
 Claude Code bridge 和自研 agent 当前通过 AgentServer supervisor path 使用 OpenAI-compatible LLM endpoint。可以用 `openteam.json` 配置，也可以临时用环境变量覆盖：
 
 ```bash
-AGENT_SERVER_ADAPTER_LLM_BASE_URL=http://127.0.0.1:3888/v1 \
-AGENT_SERVER_ADAPTER_LLM_API_KEY=<key> \
-AGENT_SERVER_ADAPTER_LLM_MODEL=<model> \
+AGENT_SERVER_MODEL_BASE_URL=http://127.0.0.1:3888/v1 \
+AGENT_SERVER_MODEL_API_KEY=<key> \
+AGENT_SERVER_MODEL_NAME=<model> \
+AGENT_SERVER_MODEL_PROVIDER=openai-compatible \
 AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS=claude-code,self-hosted-agent \
 npm run check:agent-backend-adapters:ready
 ```
+
+旧的 `AGENT_SERVER_ADAPTER_LLM_BASE_URL`、`AGENT_SERVER_ADAPTER_LLM_API_KEY`、`AGENT_SERVER_ADAPTER_LLM_MODEL`、`AGENT_SERVER_ADAPTER_LLM_PROVIDER` 仍作为兼容输入读取；新接入和文档示例只使用 `AGENT_SERVER_MODEL_*`，保证 provider/model/baseUrl/authType 的唯一解析入口是 AgentServer model runtime resolver。
 
 只验证 plumbing，不依赖真实 endpoint：
 
@@ -94,7 +105,7 @@ npm run check:agent-backend-adapters:ready:smoke-llm
 
 ## Gemini Auth
 
-Gemini preflight 会检查以下任一 auth input：
+真实 Gemini/Google 服务验证会检查以下任一 auth input：
 
 - `AGENT_SERVER_GEMINI_API_KEY`
 - `AGENT_SERVER_GOOGLE_API_KEY`
@@ -105,7 +116,7 @@ Gemini preflight 会检查以下任一 auth input：
 - `GOOGLE_APPLICATION_CREDENTIALS`
 - `~/.gemini/oauth_creds.json`
 
-推荐在 `.agent-backend-readiness.local.env` 中使用 `AGENT_SERVER_GEMINI_*` namespaced env。AgentServer adapter 会在启动 Gemini SDK 前把它们映射到官方 `GEMINI_API_KEY` / `GOOGLE_API_KEY` / `GOOGLE_APPLICATION_CREDENTIALS` / `GEMINI_CLI_HOME`，避免把全局 shell 环境变成第二套真相源。
+推荐在 `.agent-backend-readiness.local.env` 中使用 `AGENT_SERVER_GEMINI_*` namespaced env。AgentServer adapter 和当前 Gemini upstream auth patch 会在启动 Gemini SDK/CLI 前把它们映射到官方 `GEMINI_API_KEY` / `GOOGLE_API_KEY` / `GOOGLE_APPLICATION_CREDENTIALS` / `GEMINI_CLI_HOME`，避免把全局 shell 环境变成第二套真相源。
 
 配置后运行：
 

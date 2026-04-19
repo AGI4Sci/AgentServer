@@ -1,6 +1,6 @@
 # Backend Runtime
 
-最后更新：2026-04-18
+最后更新：2026-04-19
 
 ## 定位
 
@@ -29,15 +29,28 @@ AgentServer Core 不直接理解每个 backend 的原生协议。差异集中在
 
 权威 backend 列表在 [`core/runtime/backend-catalog.ts`](../core/runtime/backend-catalog.ts)。
 
-当前 backend：
+当前 runtime catalog 仍记录可识别的 backend id；正式上层 adapter 按 tier 使用：
+
+```text
+strategic
+  codex
+  claude-code
+  gemini
+  self-hosted-agent / openteam_agent
+
+ecosystem entry
+  openclaw
+  hermes-agent
+```
+
+当前上层统一 `AgentBackendAdapter` 已覆盖：
 
 - `openteam_agent`
 - `claude-code`
-- `claude-code-rust`
 - `codex`
+- `gemini`
 - `hermes-agent`
 - `openclaw`
-- `zeroclaw`
 
 每个 backend 声明：
 
@@ -69,7 +82,7 @@ npm run build:backend-binaries
 OPENTEAM_BACKEND_BIN_DIR || server/backend/bin
 ```
 
-这避免依赖全局 PATH，也避免本机安装的 `codex`、`openclaw`、`zeroclaw` 与项目内 backend 混淆。
+这避免依赖全局 PATH，也避免本机安装的 `codex`、`openclaw` 等命令与项目内 backend 混淆。
 
 `openteam_agent` 是 direct backend，不需要 managed launcher。它通过 `SessionRunner` 直接接入 AgentServer，并在模型调用层使用项目内 vendored SDK runtime。
 
@@ -115,7 +128,7 @@ agent: {
 
 ```ts
 runtime: {
-  backend: 'hermes-agent',
+  backend: 'openclaw',
 }
 ```
 
@@ -138,7 +151,7 @@ tool-call:{toolName}
 tool-result:{toolName}
 ```
 
-例如 `codex`、`openclaw`、`hermes-agent` 可以有不同的内部 tool loop；上层项目仍只处理 `tool-call:list_dir`、`tool-result:list_dir` 这类标准事件。
+例如 `codex`、`claude-code`、`openclaw`、`hermes-agent` 可以有不同的内部 tool loop；上层项目仍只处理 `tool-call:list_dir`、`tool-result:list_dir` 这类标准事件。
 
 ## Tool Smoke
 
@@ -191,15 +204,36 @@ AGENT_SERVER_TOOL_MATRIX_BACKENDS=openteam_agent npm run smoke:agent-server:tool
 AGENT_SERVER_TOOL_MATRIX_BACKENDS=openteam_agent npm run smoke:agent-server:tool-matrix
 ```
 
-## Hermes Agent
+## Ecosystem Entry Backends
 
-`hermes-agent` 当前是第一阶段集成：
+OpenClaw 和 Hermes Agent 的当前定位是 ecosystem entry backend：用于承接已有社区、搜索流量、迁移、demo 和对照实验。它们可以通过同一套 `AgentBackendAdapter` 上层接口显式调用，但不进入默认 strategic routing，也不应把专用逻辑推入 AgentServer Core。
+
+验证统一 adapter contract：
+
+```bash
+AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS=openclaw,hermes-agent npm run smoke:agent-backend-adapters
+```
+
+### Hermes Agent
+
+`hermes-agent` 当前是 ecosystem/experimental 集成：
 
 - 源码位于 `server/backend/hermes_agent`
 - launcher 为 `openteam_hermes_agent`
-- 已接入 catalog、session runner、fixture parity、live smoke
-- 当前通过 AgentServer tool bridge 保证统一工具事件
+- 已接入 catalog、session runner、fixture parity 和 supervisor compatibility adapter
+- 当前通过 AgentServer tool bridge / supervisor compatibility adapter 保证统一工具事件和可读状态
 
 Hermes 的 memory、skill、自进化策略仍属于 Hermes backend/harness 内部，不上移到 AgentServer Core。
 
 ACP stdio/native event 双向协议属于后续增强，只有在需要 Hermes 原生 memory/skill/subagent/interrupt 细粒度审计时再推进。
+
+### OpenClaw
+
+`openclaw` 当前是 ecosystem/compatibility 集成：
+
+- 源码位于 `server/backend/openclaw`
+- launcher 为 `openteam_openclaw`
+- 已接入 catalog、session runner、fixture parity 和 supervisor compatibility adapter
+- 当前通过 AgentServer normalized event / stage-result 保证上层调用接口一致
+
+OpenClaw 的价值主要是生态流量入口、迁移路径和对照实验；默认 orchestrator 不应把高价值生产任务自动路由给 OpenClaw，除非策略显式 opt in。

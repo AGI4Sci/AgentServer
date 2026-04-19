@@ -17,6 +17,9 @@ import type {
   BackendStageResult,
 } from '../../agent_server/types.js';
 import type { SessionStreamEvent } from '../session-types.js';
+import { resolveCodexRuntimeModelSelection } from '../codex-model-runtime.js';
+import { resolveModelRuntimeConnection } from '../model-runtime-resolver.js';
+import { ensureRuntimeSupervisor } from '../supervisor-client.js';
 
 type JsonRpcId = number | string;
 
@@ -76,6 +79,9 @@ export class CodexAppServerAgentBackendAdapter implements AgentBackendAdapter {
   }
 
   async startSession(input: StartBackendSessionInput): Promise<BackendSessionRef> {
+    if (codexRuntimeSelection(this.options).route === 'custom-provider') {
+      await ensureRuntimeSupervisor();
+    }
     const client = CodexJsonRpcClient.spawn(this.options);
     await client.request('initialize', {
       clientInfo: {
@@ -333,7 +339,8 @@ class CodexJsonRpcClient {
 
   static spawn(options: CodexAppServerAdapterOptions): CodexJsonRpcClient {
     const command = options.command || process.env.AGENT_SERVER_CODEX_APP_SERVER_COMMAND || 'codex';
-    const args = options.args || ['app-server', '--listen', 'stdio://'];
+    const args = [...(options.args || ['app-server', '--listen', 'stdio://'])];
+    args.push(...codexSpawnConfigArgs(options));
     const child = spawn(command, args, {
       env: {
         ...process.env,
@@ -496,11 +503,27 @@ function renderCodexTurnInput(input: RunBackendTurnInput): string {
   ].join('\n');
 }
 
+function codexSpawnConfigArgs(options: CodexAppServerAdapterOptions): string[] {
+  return codexRuntimeSelection(options).configArgs;
+}
+
+function codexRuntimeSelection(options: CodexAppServerAdapterOptions) {
+  const modelRuntime = resolveModelRuntimeConnection({
+    model: options.model || process.env.AGENT_SERVER_CODEX_MODEL?.trim(),
+  });
+  return resolveCodexRuntimeModelSelection({
+    connection: modelRuntime,
+    input: { model: options.model || null },
+    explicitCodexModel: options.model || process.env.AGENT_SERVER_CODEX_MODEL,
+  });
+}
+
 function codexTurnOverrides(options: CodexAppServerAdapterOptions): Record<string, string> {
-  const model = options.model || process.env.AGENT_SERVER_CODEX_MODEL?.trim();
+  const selection = codexRuntimeSelection(options);
   const effort = options.effort || process.env.AGENT_SERVER_CODEX_EFFORT?.trim();
   return {
-    ...(model ? { model } : {}),
+    ...(selection.model ? { model: selection.model } : {}),
+    ...(selection.modelProvider ? { modelProvider: selection.modelProvider } : {}),
     ...(effort ? { effort } : {}),
   };
 }

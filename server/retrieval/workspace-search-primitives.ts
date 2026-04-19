@@ -217,43 +217,7 @@ const SHELL_FALLBACK_ADAPTER = createShellWorkspacePrimitiveAdapter({
   },
 });
 
-const ZEROCLAW_NATIVE_ALIGNED_ADAPTER = createShellWorkspacePrimitiveAdapter({
-  id: 'zeroclaw_native_aligned',
-  invocationMode: 'native_aligned',
-  fileListCommand(root) {
-    return {
-      command: 'rg',
-      args: ['--files', '--hidden', '--glob', '!node_modules', '--glob', '!.git', root],
-    };
-  },
-  contentSearchCommand(root, token) {
-    return {
-      command: 'rg',
-      args: [
-        '--json',
-        '-n',
-        '-F',
-        '--hidden',
-        '--no-ignore-vcs',
-        '--glob',
-        '!node_modules',
-        '--glob',
-        '!.git',
-        '--max-count',
-        String(DEFAULT_MAX_MATCH_LINES),
-        '--context',
-        String(DEFAULT_MAX_CONTEXT_LINES),
-        token,
-        root,
-      ],
-    };
-  },
-});
-
 export function resolveWorkspacePrimitiveAdapter(backend: BackendType): WorkspaceSearchPrimitiveAdapter {
-  if (backend === 'zeroclaw') {
-    return ZEROCLAW_NATIVE_ALIGNED_ADAPTER;
-  }
   return SHELL_FALLBACK_ADAPTER;
 }
 

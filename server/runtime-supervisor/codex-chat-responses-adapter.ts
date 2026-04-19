@@ -506,6 +506,19 @@ export async function handleCodexChatResponsesAdapter(
     model: prepared.chatRequest.model,
     previousResponseId: previousId,
     toolCount: Array.isArray(prepared.chatRequest.tools) ? prepared.chatRequest.tools.length : 0,
+    toolNames: Array.isArray(prepared.chatRequest.tools)
+      ? prepared.chatRequest.tools
+        .map((tool) => {
+          if (!tool || typeof tool !== 'object') {
+            return null;
+          }
+          const record = tool as JsonRecord;
+          const fn = record.function && typeof record.function === 'object' ? record.function as JsonRecord : null;
+          return typeof fn?.name === 'string' ? fn.name : null;
+        })
+        .filter((name): name is string => typeof name === 'string')
+        .slice(0, 20)
+      : [],
     messageCount: Array.isArray(prepared.chatRequest.messages) ? prepared.chatRequest.messages.length : 0,
   });
 

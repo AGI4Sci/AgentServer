@@ -9,12 +9,10 @@ import type {
 } from './team-worker-types.js';
 import { OpenTeamAgentSessionClient } from './clients/openteam-agent-session-client.js';
 import { ClaudeCodeTeamWorker } from './workers/claude-code-team-worker.js';
-import { ClaudeCodeRustTeamWorker } from './workers/claude-code-rust-team-worker.js';
 import { CodexTeamWorker } from './workers/codex-team-worker.js';
 import { HermesAgentDirectSessionClient } from './clients/hermes-agent-session-client.js';
 import { OpenClawTeamWorker } from './workers/openclaw-team-worker.js';
 import { SessionRunnerTeamWorker } from './workers/session-runner-team-worker.js';
-import { ZeroClawTeamWorker } from './workers/zeroclaw-team-worker.js';
 
 interface TeamWorker {
   init(teamId: string): Promise<void>;
@@ -70,9 +68,6 @@ function createWorker(runtime: WorkerRuntimeType): TeamWorker {
   if (runtime === 'claude-code') {
     return new ClaudeCodeTeamWorker();
   }
-  if (runtime === 'claude-code-rust') {
-    return new ClaudeCodeRustTeamWorker();
-  }
   if (runtime === 'codex') {
     return new CodexTeamWorker();
   }
@@ -81,9 +76,6 @@ function createWorker(runtime: WorkerRuntimeType): TeamWorker {
   }
   if (runtime === 'openclaw') {
     return new OpenClawTeamWorker();
-  }
-  if (runtime === 'zeroclaw') {
-    return new ZeroClawTeamWorker();
   }
   throw new Error(`Team worker not implemented for runtime: ${runtime}`);
 }
@@ -116,11 +108,9 @@ async function getOrCreateWorker(
 export function supportsRuntimeSupervisor(runtime: string): runtime is WorkerRuntimeType {
   return runtime === 'openteam_agent'
     || runtime === 'claude-code'
-    || runtime === 'claude-code-rust'
     || runtime === 'codex'
     || runtime === 'hermes-agent'
-    || runtime === 'openclaw'
-    || runtime === 'zeroclaw';
+    || runtime === 'openclaw';
 }
 
 export async function ensureRuntimeWorkerSession(

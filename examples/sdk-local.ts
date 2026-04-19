@@ -1,7 +1,7 @@
 import { createAgentClient } from '@agi4sci/agent-server';
 
 const client = createAgentClient({
-  defaultBackend: 'openteam_agent',
+  defaultBackend: 'codex',
   defaultWorkspace: process.cwd(),
   defaultSystemPrompt: 'You are a concise engineering assistant.',
 });

@@ -27,6 +27,8 @@ legacy
 
 Backend tier 只影响默认路由和 benchmark 优先级，不影响 backend 能否被显式调用。用户或上层项目可以手动选择 non-strategic backend，但 orchestrator policy 不应默认把关键写操作分给 non-strategic backend。
 
+OpenClaw 和 Hermes Agent 属于 ecosystem entry backend：它们可以承接已有社区、搜索流量、迁移入口和 demo 需求，并且应通过同一套 `AgentBackendAdapter` 上层接口被显式调用；但它们不进入首版 strategic routing，也不应把专用逻辑推入 AgentServer Core。所有差异保留在 compatibility/experimental adapter 层。
+
 ## 2. ExecutionBackend
 
 AgentServer 区分两类执行 backend：
@@ -95,6 +97,19 @@ type ExecutionBackend = {
 | Claude Code | strategic | 实现、重构、跨文件编辑、工程执行 | 独立承担最终风险审查 |
 | Gemini | strategic | 长上下文、多模态、宽范围资料整合、代码库大范围阅读 | 未声明完整工具/sandbox 能力时执行高风险写操作 |
 | self-hosted-agent | strategic | 白盒 harness、context/tool/orchestration 策略实验 | 作为黑盒生产默认能力评分来源 |
+
+## 3.1 Model Runtime Support Matrix
+
+Provider/model 选择是 AgentServer Core 的统一责任，不应散落到各个 backend wrapper。代码里的机器可读真相源是 `StrategicAgentBackendProfile.modelRuntimeSupport`，文档表只反映当前策略：
+
+| Backend | Current provider/model route | Canonical inputs | Explicit boundary |
+|---|---|---|---|
+| Codex | Native `codex-chatgpt` / upstream OpenAI account route through Codex app-server; OpenAI-compatible endpoints with `baseUrl` route through Codex custom model provider + AgentServer responses bridge | explicit adapter option, `AGENT_SERVER_CODEX_MODEL`, Codex/OpenAI/ChatGPT-native `ModelRuntimeConnection`, `AGENT_SERVER_MODEL_*`, `openteam.json` endpoints, Codex upstream auth/config under `CODEX_HOME` | Non-native provider/model input without an executable endpoint is accepted by AgentServer but is not forced into the ChatGPT-native Codex account path |
+| Claude Code | Current bridge consumes `ModelRuntimeConnection` through OpenAI-compatible env aliases | `AGENT_SERVER_MODEL_*`, legacy `AGENT_SERVER_ADAPTER_LLM_*`, `openteam.json` endpoints | Native Anthropic SDK/RPC route is a target state, not a second hidden env/config chain |
+| Gemini | Native Gemini/Google/Vertex SDK route | `AGENT_SERVER_GEMINI_*`, official Gemini/Google env, oauth file, optional Gemini-native model name | OpenAI-compatible model names are unsupported for Gemini SDK and must route to another bridge backend |
+| self-hosted-agent | AgentServer-managed OpenAI-compatible reference harness | `AGENT_SERVER_MODEL_*`, legacy `AGENT_SERVER_ADAPTER_LLM_*`, `openteam.json` endpoints | It is a white-box harness, not proof that a black-box provider has native agent loop/sandbox/approval |
+| OpenClaw | Supervisor compatibility adapter, provider-qualified model when available | `AGENT_SERVER_MODEL_*`, legacy `AGENT_SERVER_ADAPTER_LLM_*`, `openteam.json` endpoints, OpenClaw runtime config | Ecosystem/traffic entry only; not default orchestrator routing |
+| Hermes Agent | Supervisor compatibility adapter, provider-qualified model when available | `AGENT_SERVER_MODEL_*`, legacy `AGENT_SERVER_ADAPTER_LLM_*`, `openteam.json` endpoints, Hermes runtime config | Ecosystem/traffic entry only; not default orchestrator routing |
 
 `BackendStrength` 至少应包含：
 

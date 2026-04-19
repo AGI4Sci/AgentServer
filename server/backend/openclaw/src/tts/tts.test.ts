@@ -2,15 +2,23 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const loadBundledPluginPublicSurfaceModuleSync = vi.hoisted(() => vi.fn());
 const loadActivatedBundledPluginPublicSurfaceModuleSync = vi.hoisted(() => vi.fn());
-
-vi.mock("../plugin-sdk/facade-runtime.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../plugin-sdk/facade-runtime.js")>();
-  return {
-    ...actual,
-    loadActivatedBundledPluginPublicSurfaceModuleSync,
-    loadBundledPluginPublicSurfaceModuleSync,
-  };
+const createLazyFacadeObjectValue = vi.hoisted(() => {
+  return <T extends object>(load: () => T): T =>
+    new Proxy(
+      {},
+      {
+        get(_target, property, receiver) {
+          return Reflect.get(load(), property, receiver);
+        },
+      },
+    ) as T;
 });
+
+vi.mock("../plugin-sdk/facade-runtime.js", () => ({
+  createLazyFacadeObjectValue,
+  loadActivatedBundledPluginPublicSurfaceModuleSync,
+  loadBundledPluginPublicSurfaceModuleSync,
+}));
 
 describe("tts runtime facade", () => {
   let ttsModulePromise: Promise<typeof import("./tts.js")> | undefined;

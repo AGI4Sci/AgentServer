@@ -103,7 +103,7 @@ import { createAgentClient } from '@agi4sci/agent-server';
 
 const client = createAgentClient({
   baseUrl: 'http://127.0.0.1:8080',
-  defaultBackend: 'claude-code',
+  defaultBackend: 'codex',
   defaultWorkspace: '/absolute/path/to/workspace',
 });
 

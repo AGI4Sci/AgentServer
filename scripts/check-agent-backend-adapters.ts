@@ -14,6 +14,7 @@ import { loadOpenTeamConfig } from '../server/utils/openteam-config.js';
 import { startSmokeModelServer, type SmokeModelServer } from './lib/smoke-model-server.js';
 import { resolveAdapterLlmEndpointOverride } from '../server/runtime/adapters/llm-endpoint-override.js';
 import { summarizeGeminiAuthInputs } from '../server/runtime/adapters/gemini-auth-env.js';
+import { resolveModelRuntimeConnectionCandidates } from '../server/runtime/model-runtime-resolver.js';
 
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
@@ -28,6 +29,7 @@ const config = loadOpenTeamConfig();
 const checks: CheckResult[] = [];
 let smokeModelServer: SmokeModelServer | undefined;
 const STRICT = process.env.AGENT_SERVER_ADAPTER_PREFLIGHT_STRICT === '1';
+const GEMINI_FUNCTIONAL_SMOKE = process.env.AGENT_SERVER_GEMINI_FUNCTIONAL_SMOKE === '1';
 
 type CheckResult = {
   backend: StrategicAgentBackend | 'shared';
@@ -41,10 +43,10 @@ async function main(): Promise<void> {
   try {
     if (process.env.AGENT_SERVER_ADAPTER_PREFLIGHT_SMOKE_LLM === '1') {
       smokeModelServer = await startSmokeModelServer();
-      config.llm.baseUrl = smokeModelServer.baseUrl;
-      config.llm.apiKey = 'agent-server-smoke-key';
-      config.llm.model = 'agent-server-smoke-model';
-      config.llm.fallbacks = [];
+      process.env.AGENT_SERVER_MODEL_BASE_URL = smokeModelServer.baseUrl;
+      process.env.AGENT_SERVER_MODEL_API_KEY = 'agent-server-smoke-key';
+      process.env.AGENT_SERVER_MODEL_NAME = 'agent-server-smoke-model';
+      process.env.AGENT_SERVER_MODEL_PROVIDER = 'openai-compatible';
       checks.push({
         backend: 'shared',
         name: 'smoke-llm-endpoint',
@@ -54,7 +56,7 @@ async function main(): Promise<void> {
     }
 
     for (const adapter of listAvailableAgentBackendAdapters()) {
-      if (!selectedBackends.includes(adapter.id)) {
+      if (!isSelectedStrategicBackend(adapter.id)) {
         continue;
       }
       checks.push({
@@ -118,6 +120,12 @@ async function main(): Promise<void> {
   }
 }
 
+function isSelectedStrategicBackend(backend: unknown): backend is StrategicAgentBackend {
+  return typeof backend === 'string'
+    && STRATEGIC_BACKENDS.includes(backend as StrategicAgentBackend)
+    && selectedBackends.includes(backend as StrategicAgentBackend);
+}
+
 async function checkCommand(
   backend: StrategicAgentBackend,
   name: string,
@@ -144,28 +152,21 @@ async function checkCommand(
 
 async function checkLlmEndpoint(): Promise<void> {
   const override = resolveAdapterLlmEndpointOverride();
-  const primaryEndpoint = override
-    ? {
-        label: 'env-override',
-        baseUrl: override.baseUrl || config.llm.baseUrl,
-        apiKey: override.apiKey || config.llm.apiKey,
-        model: override.modelName || config.llm.model,
-      }
+  const modelInput = override
+    ? { llmEndpoint: override }
     : {
-        label: 'primary',
-        baseUrl: config.llm.baseUrl,
-        apiKey: config.llm.apiKey,
         model: config.llm.model,
+        modelProvider: config.llm.provider,
+        modelName: config.llm.model,
       };
-  const endpoints = [
-    primaryEndpoint,
-    ...(override ? [] : (config.llm.fallbacks || []).map((endpoint, index) => ({
-      label: endpoint.label || `fallback-${index + 1}`,
-      baseUrl: endpoint.baseUrl,
-      apiKey: endpoint.apiKey,
-      model: endpoint.model,
-    }))),
-  ];
+  const endpoints = resolveModelRuntimeConnectionCandidates(modelInput)
+    .filter((endpoint) => endpoint.baseUrl)
+    .map((endpoint, index) => ({
+      label: endpoint.source === 'openteam-config' && index > 0 ? `openteam-config-${index + 1}` : endpoint.source,
+      baseUrl: endpoint.baseUrl || '',
+      apiKey: endpoint.apiKey || '',
+      model: endpoint.modelName || endpoint.model || '',
+    }));
   if (endpoints.length === 0) {
     checks.push({
       backend: 'shared',
@@ -190,16 +191,18 @@ async function checkLlmEndpoint(): Promise<void> {
     const probe = await probeOpenAiCompatibleEndpoint(endpoint.baseUrl, endpoint.apiKey);
     return { ...endpoint, ...probe };
   }));
+  const hasReachableEndpoint = results.some((result) => result.reachable);
   for (const result of results) {
     checks.push({
       backend: 'shared',
       name: `llm-endpoint:${result.label}`,
-      status: result.reachable ? 'ok' : 'fail',
+      status: result.reachable ? 'ok' : hasReachableEndpoint ? 'warn' : 'fail',
+      strictBlocking: result.reachable ? undefined : !hasReachableEndpoint,
       detail: result.reachable
         ? `${result.baseUrl} reachable model=${result.model} status=${result.statusCode}`
         : [
           `${result.baseUrl} unreachable model=${result.model}: ${result.error}`,
-          'Start/configure this endpoint or set AGENT_SERVER_ADAPTER_LLM_BASE_URL/API_KEY/MODEL for Claude Code and self-hosted live checks.',
+          'Start/configure this endpoint or set AGENT_SERVER_MODEL_BASE_URL/API_KEY/MODEL_NAME for Claude Code and self-hosted live checks.',
         ].join(' '),
     });
   }
@@ -301,8 +304,11 @@ function checkGeminiAuthInputs(): void {
   checks.push({
     backend: 'gemini',
     name: 'gemini-auth-inputs',
-    status: summary.ready ? 'ok' : 'warn',
-    detail: summary.detail,
+    status: summary.ready || GEMINI_FUNCTIONAL_SMOKE ? 'ok' : 'warn',
+    detail: summary.ready || !GEMINI_FUNCTIONAL_SMOKE
+      ? summary.detail
+      : `functionalSmoke=true realAuth=not_required ${summary.detail}`,
+    strictBlocking: !summary.ready && !GEMINI_FUNCTIONAL_SMOKE,
   });
 }
 

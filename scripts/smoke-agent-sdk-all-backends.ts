@@ -62,11 +62,44 @@ async function startSmokeModelServer(): Promise<{ baseUrl: string; close: () => 
     }
 
     const raw = await readRequestBody(req);
-    const body = raw ? JSON.parse(raw) as { messages?: Array<{ role?: string; content?: string }> } : {};
+    const body = raw ? JSON.parse(raw) as {
+      messages?: Array<{ role?: string; content?: string }>;
+      tools?: Array<{ function?: { name?: string } }>;
+    } : {};
     const transcript = (body.messages || []).map((message) => message.content || '').join('\n\n');
-    const content = transcript.includes('Tool result for list_dir')
+    const hasToolResult = transcript.includes('Tool result for list_dir')
+      || (body.messages || []).some((message) => message.role === 'tool');
+    const hasListDirTool = (body.tools || []).some((tool) => tool.function?.name === 'list_dir');
+    const hasExecCommandTool = (body.tools || []).some((tool) => tool.function?.name === 'exec_command');
+    const content = hasToolResult
       ? 'All-backend SDK smoke completed after list_dir.'
       : '<list_dir><path>.</path></list_dir>';
+    const toolCall = hasListDirTool
+      ? {
+          id: 'call_agent_sdk_smoke_list_dir',
+          type: 'function',
+          function: {
+            name: 'list_dir',
+            arguments: JSON.stringify({ path: '.' }),
+          },
+        }
+      : hasExecCommandTool
+        ? {
+            id: 'call_agent_sdk_smoke_exec_command',
+            type: 'function',
+            function: {
+              name: 'exec_command',
+              arguments: JSON.stringify({ cmd: 'ls .' }),
+            },
+          }
+        : null;
+    const message = toolCall && !hasToolResult
+      ? {
+          role: 'assistant',
+          content: null,
+          tool_calls: [toolCall],
+        }
+      : { role: 'assistant', content };
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
@@ -77,8 +110,8 @@ async function startSmokeModelServer(): Promise<{ baseUrl: string; close: () => 
       choices: [
         {
           index: 0,
-          message: { role: 'assistant', content },
-          finish_reason: 'stop',
+          message,
+          finish_reason: toolCall && !hasToolResult ? 'tool_calls' : 'stop',
         },
       ],
       usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
@@ -212,8 +245,9 @@ try {
       if (!result.run.output.success) {
         throw new Error(result.run.output.error);
       }
-      if (!events.includes('tool-call:list_dir') || !events.includes('tool-result:list_dir')) {
-        throw new Error(`missing list_dir HTTP stream events; saw=${events.join(', ') || 'none'}`);
+      const expectedTool = backend.id === 'codex' ? 'run_command' : 'list_dir';
+      if (!events.includes(`tool-call:${expectedTool}`) || !events.includes(`tool-result:${expectedTool}`)) {
+        throw new Error(`missing ${expectedTool} HTTP stream events; saw=${events.join(', ') || 'none'}`);
       }
       results.push({
         backend: backend.id,

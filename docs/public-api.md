@@ -12,6 +12,7 @@ There are two related backend concepts:
 
 - **currently registered backend ids**: what the runtime catalog can launch today.
 - **strategic agent backends**: the first-class long-term orchestration set, currently planned as Codex, Claude Code, Gemini, and the self-hosted agent.
+- **ecosystem entry backends**: OpenClaw and Hermes Agent can be explicitly invoked through the same `AgentBackendAdapter` interface for traffic, migration, demos, and comparisons, but they are not default strategic routing targets.
 
 ```ts
 import {
@@ -33,11 +34,9 @@ console.log(listSupportedBackends().map((backend) => backend.id));
 // [
 //   'openteam_agent',
 //   'claude-code',
-//   'claude-code-rust',
 //   'codex',
 //   'hermes-agent',
 //   'openclaw',
-//   'zeroclaw',
 // ]
 
 for (const backend of BACKEND_CATALOG) {
@@ -59,17 +58,25 @@ console.log(listRegisteredStrategicBackendIds());
 console.log(listStrategicAgentBackendProfiles().map((profile) => ({
   id: profile.id,
   currentTransport: profile.currentTransport,
+  modelRuntimeSupport: profile.modelRuntimeSupport.providerRoutes,
   productionComplete: isProductionCompleteAgentBackend(profile),
 })));
 
 console.log(listAvailableAgentBackendAdapters().map((adapter) => adapter.id));
-// Structured adapter implementations currently available in AgentServer runtime.
+// Structured adapter implementations currently available in AgentServer runtime,
+// including strategic adapters and explicit ecosystem entry adapters.
 
 console.log(hasAgentBackendAdapter('codex'));
 // true once the Codex app-server adapter prototype is registered.
 
 console.log(hasAgentBackendAdapter('gemini'));
 // true once the Gemini CLI SDK adapter prototype is registered.
+
+console.log(hasAgentBackendAdapter('openclaw'));
+// true for the OpenClaw ecosystem compatibility adapter.
+
+console.log(hasAgentBackendAdapter('hermes-agent'));
+// true for the Hermes Agent ecosystem compatibility adapter.
 ```
 
 Use capabilities for advanced UI or routing decisions. For ordinary task execution, changing only `agent.backend` is enough.
@@ -86,13 +93,15 @@ The strategic set is the default target for the multi-agent orchestration roadma
 
 Strategic backend profiles intentionally separate `currentCapabilities` from `targetCapabilities`. This prevents a temporary CLI bridge from being treated as a production-complete agent backend before it exposes structured events, readable state, abort/resume, and full status transparency.
 
+Strategic backend profiles also expose `modelRuntimeSupport`. This is the public, machine-readable provider/model boundary: it tells callers which providers are native, which are routed through a native custom-provider hook, which are routed through AgentServer's OpenAI-compatible bridge, which are pending, and which must fail or degrade explicitly instead of being smuggled through a backend path that cannot preserve native agent semantics.
+
 Adapter availability and production completeness are separate checks:
 
 - `listStrategicAgentBackendProfiles()` describes roadmap and capability targets.
 - `listAvailableAgentBackendAdapters()` lists structured adapter implementations that AgentServer can instantiate.
 - `isProductionCompleteAgentBackend(profile)` is stricter; prototype adapters stay false until live smoke validates the full contract.
 
-At the current prototype stage, Codex uses the app-server JSON-RPC route, Gemini uses the Gemini CLI SDK route, and the self-hosted agent uses the direct harness route. Claude Code remains the next structured adapter target.
+At the current prototype stage, Codex uses the app-server JSON-RPC route, Claude Code uses the AgentServer schema bridge, Gemini uses the Gemini CLI SDK route, and the self-hosted agent uses the direct harness route. OpenClaw and Hermes Agent are exposed as ecosystem compatibility adapters, not default strategic routing targets.
 
 ## Backend Adapter Model
 
@@ -113,7 +122,7 @@ backend: 'codex'
 and later:
 
 ```ts
-backend: 'hermes-agent'
+backend: 'openclaw'
 ```
 
 with the same task input and event handling code.
@@ -212,7 +221,7 @@ The SDK also exposes the small lifecycle surface most host projects need:
 import { createAgentClient } from '@agi4sci/agent-server';
 
 const client = createAgentClient({
-  defaultBackend: 'openteam_agent',
+  defaultBackend: 'codex',
   defaultWorkspace: '/absolute/path/to/workspace',
 });
 
@@ -241,11 +250,9 @@ To switch backend, change only this field:
 ```ts
 backend: 'claude-code'
 // or 'openteam_agent'
-// or 'claude-code-rust'
 // or 'codex'
 // or 'hermes-agent'
 // or 'openclaw'
-// or 'zeroclaw'
 ```
 
 ## Run A Task Over HTTP
@@ -263,7 +270,7 @@ import { createAgentClient } from '@agi4sci/agent-server';
 
 const client = createAgentClient({
   baseUrl: 'http://127.0.0.1:8080',
-  defaultBackend: 'hermes-agent',
+  defaultBackend: 'codex',
   defaultWorkspace: '/absolute/path/to/workspace',
 });
 
@@ -488,15 +495,16 @@ npm run smoke:agent-server:tool-matrix
 `check:agent-backend-adapters` is a preflight for live adapter work. It checks strategic adapter registration, Codex app-server command availability plus a lightweight JSON-RPC initialize/thread-start handshake, the OpenAI-compatible LLM endpoint used by Claude Code/self-hosted bridge paths, and whether the Gemini SDK module is resolvable. It honors `AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS` for subset checks.
 Codex preflight also records non-secret account/model/rate-limit summaries and auth status. Gemini preflight records whether usable auth inputs exist without printing key material, and it verifies the SDK shape expected by the adapter: `GeminiCliAgent` plus `session.sendStream(prompt, signal)`.
 `check:agent-backend-adapters:smoke-llm` runs the same preflight with a temporary OpenAI-compatible smoke LLM endpoint. Use it to verify adapter plumbing for Claude Code/self-hosted paths without requiring the real `openteam.json` endpoint to be online.
-For production-like Claude Code/self-hosted checks, preflight and runtime share the same environment override semantics: set `AGENT_SERVER_ADAPTER_LLM_BASE_URL`, `AGENT_SERVER_ADAPTER_LLM_API_KEY`, `AGENT_SERVER_ADAPTER_LLM_MODEL`, and optionally `AGENT_SERVER_ADAPTER_LLM_PROVIDER` to test a real endpoint without editing `openteam.json`.
+For production-like Claude Code/self-hosted checks, preflight and runtime share the same environment override semantics through the AgentServer model runtime resolver: set `AGENT_SERVER_MODEL_BASE_URL`, `AGENT_SERVER_MODEL_API_KEY`, `AGENT_SERVER_MODEL_NAME`, and optionally `AGENT_SERVER_MODEL_PROVIDER` / `AGENT_SERVER_MODEL_AUTH_TYPE` to test a real endpoint without editing `openteam.json`. The older `AGENT_SERVER_ADAPTER_LLM_*` names remain compatibility inputs, but new code and docs should use `AGENT_SERVER_MODEL_*`.
 `check:agent-backend-adapters:strict` runs the production preflight with strict readiness semantics: warnings, such as missing Gemini auth inputs, also produce a non-zero exit. Use it as the final local gate before declaring all strategic backend runtimes and credentials ready.
 `check:agent-backend-adapters:ready` is the one-command readiness gate. It runs strict preflight first and stops there if local runtime or credential setup is missing. Once strict preflight passes, it covers Codex with isolated live smoke when Codex is selected, then runs live smoke for the remaining selected backends. It honors `AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS` for subset readiness checks, and defaults Codex live smoke to `gpt-5.4` unless `AGENT_SERVER_CODEX_MODEL` is already set.
+Gemini readiness uses `AGENT_SERVER_GEMINI_FUNCTIONAL_SMOKE=1` by default so local runs can verify the AgentServer adapter lifecycle and structured event contract without real Google/Gemini credentials. Set `AGENT_SERVER_GEMINI_REQUIRE_REAL_AUTH=1` when you want the Gemini readiness gate to require real Gemini/Google auth and service access.
 Set `AGENT_SERVER_ADAPTER_READINESS_DRY_RUN=1` with `check:agent-backend-adapters:ready` to print the planned readiness steps without running preflight or live smoke. This is useful when checking backend subsets or reviewing readiness behavior after script changes.
 `prepare:gemini-sdk-dev` prepares the vendored Gemini checkout for local `tsx` development fallback by installing workspace links, generating git metadata, attempting the official core/sdk builds, and copying policy TOML assets into the partial dist tree if the upstream build is blocked. This does not replace the production requirement to build or link a clean `@google/gemini-cli-sdk` package.
-`smoke:agent-backend-adapters` verifies that the strategic agent-backend adapter set is registered and exposes structured capabilities for Codex, Claude Code, Gemini, and the self-hosted agent. By default it runs a contract smoke that does not require external model credentials. Set `AGENT_SERVER_LIVE_ADAPTER_SMOKE=1` to also run a real `runTurn` smoke against the installed backend runtimes: it creates a temporary workspace, sends a handoff packet, consumes structured events, and requires a completed `stage-result`. Set `AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS=codex,gemini` to verify a subset while bringing local runtimes online.
+`smoke:agent-backend-adapters` verifies that the strategic agent-backend adapter set is registered and exposes structured capabilities for Codex, Claude Code, Gemini, and the self-hosted agent. By default it runs a contract smoke that does not require external model credentials. It can also explicitly verify ecosystem entry adapters with `AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS=openclaw,hermes-agent`. Set `AGENT_SERVER_LIVE_ADAPTER_SMOKE=1` to also run a real `runTurn` smoke against the installed backend runtimes: it creates a temporary workspace, sends a handoff packet, consumes structured events, and requires a completed `stage-result`. Set `AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS=codex,gemini` to verify a subset while bringing local runtimes online.
 `smoke:agent-backend-adapters:codex-isolated` runs Codex live smoke with a temporary `CODEX_HOME` containing copied auth/config files but no copied sqlite state. It is useful after upstream Codex updates when local state migrations may be stale.
 Codex app-server may emit transient `error` notifications with `willRetry: true` while it retries stream sampling or falls back to HTTP. AgentServer maps those to non-terminal running status events and waits for the final app-server outcome. Use `AGENT_SERVER_CODEX_MODEL` and `AGENT_SERVER_CODEX_EFFORT` to test account-specific model access; on the current ChatGPT Pro auth path, `gpt-5.4` passes isolated live smoke, while `gpt-5.2-codex` can be listed but rejected by the upstream app-server for this account.
-`smoke:agent-backend-adapters:live-smoke-llm` runs live `runTurn` smoke with a temporary OpenAI-compatible endpoint injected into supervisor-backed adapters. It is useful for Claude Code/self-hosted plumbing checks before the real shared endpoint is available; Codex and Gemini still need their own native runtime credentials for full production-like live smoke.
+`smoke:agent-backend-adapters:live-smoke-llm` runs live `runTurn` smoke with a temporary OpenAI-compatible endpoint injected into bridge-capable adapters. It is useful for Claude Code/self-hosted plumbing checks before the real shared endpoint is available. Codex can use this class of endpoint through its custom provider + responses bridge path; Gemini still needs Gemini/Google-native runtime credentials for full production-like live smoke.
 `smoke:agent-sdk:all-backends` verifies the external SDK/HTTP streaming surface for every backend id in `listSupportedBackends()`. It requires managed launcher binaries for native backends under `server/backend/bin` or `OPENTEAM_BACKEND_BIN_DIR`; otherwise it fails rather than silently accepting partial backend coverage.
 `smoke:agent-sdk:installed` verifies the npm package install path and also runs every backend by pointing the installed package at the managed launcher directory.
 

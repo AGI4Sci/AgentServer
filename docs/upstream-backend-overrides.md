@@ -19,9 +19,8 @@
 当前检查结论：
 
 - `server/backend/codex`：无 AgentServer adapter 必需 patch。
-- `server/backend/gemini`：无 AgentServer adapter 必需 patch；存在 upstream clean build debt，见 Gemini 小节。
+- `server/backend/gemini`：有一个小 auth-env alias patch，见 Gemini 小节；仍存在 upstream clean build debt。
 - `server/backend/claude_code`：有一个 AgentServer bridge patch，见 Claude Code 小节。
-- `server/backend/claude_code_rust`：无 AgentServer adapter 必需 patch。
 - AgentServer adapter 代码均放在 `server/runtime/adapters/`、`server/runtime/agent-backend-*.ts`、`scripts/`、`tests/` 和 `docs/` 等 AgentServer 侧路径中。
 
 允许考虑 upstream patch 的典型情况：
@@ -46,6 +45,7 @@ server/backend/codex
 说明：
 
 - 当前设计要求 Codex adapter 优先通过 Codex app-server / SDK / structured protocol 接入。
+- 任意 OpenAI-compatible provider/model 需要进入 Codex 时，AgentServer 侧通过 Codex custom model provider + responses bridge 注入，不修改 Codex 官方源码，也不绕开 Codex app-server 的 native loop、工具、approval、sandbox、session 和结构化事件。
 - AgentServer 侧的 adapter contract、capability、handoff、run/stage ledger 和 public API 文档都位于 AgentServer 自己的源码与 `docs/` 中。
 - 若未来为暴露缺失事件、状态查询、approval bridge 或 sandbox metadata 而必须修改 Codex 官方源码，需在下方新增记录。
 
@@ -67,12 +67,39 @@ owner:
 
 ### Gemini
 
-当前状态：无 AgentServer adapter 必需的官方源码 patch。
+当前状态：`server/backend/gemini` 有一个小 auth-env alias patch；Gemini live readiness 仍需要真实 Gemini/Google 凭据值，不能通过 patch 伪造。
 
 本地路径：
 
 ```text
 server/backend/gemini
+```
+
+已修改文件：
+
+```text
+server/backend/gemini/packages/cli/src/config/auth.ts
+server/backend/gemini/packages/cli/src/config/auth.test.ts
+```
+
+目的：
+
+- 让 Gemini 官方 CLI auth validation 在直接启动官方 CLI/SDK 路径时也识别 AgentServer namespaced auth env。
+- `AGENT_SERVER_GEMINI_API_KEY` 可作为 `GEMINI_API_KEY` alias。
+- `AGENT_SERVER_GOOGLE_API_KEY` 可作为 `GOOGLE_API_KEY` alias。
+- `AGENT_SERVER_GOOGLE_APPLICATION_CREDENTIALS` 可作为 `GOOGLE_APPLICATION_CREDENTIALS` alias。
+- placeholder 值不会覆盖已有官方 env，避免 readiness template 被误判为真实凭据。
+
+重放步骤：
+
+- 重新同步 Gemini upstream 后，检查 `packages/cli/src/config/auth.ts` 的 `validateAuthMethod()` 是否仍只读取官方 env。
+- 若仍需要 AgentServer namespaced env，重放 `applyAgentServerAuthEnvAliases()`、`applyEnvAlias()`、`isPlaceholderValue()`，并在 `validateAuthMethod()` 调用 `loadEnvironment()` 后立即应用 aliases。
+- 重放 `packages/cli/src/config/auth.test.ts` 中 `AGENT_SERVER_GEMINI_API_KEY` 和 `AGENT_SERVER_GOOGLE_API_KEY` 两个验证用例。
+- 重放后运行：
+
+```bash
+cd server/backend/gemini
+npx vitest run packages/cli/src/config/auth.test.ts
 ```
 
 已知 upstream build debt：
@@ -102,13 +129,12 @@ packages/core/src/code_assist/oauth2.ts(80,41): error TS4111: Property 'GEMINI_O
 
 ### Claude Code
 
-当前状态：`server/backend/claude_code` 有 AgentServer bridge patch；`server/backend/claude_code_rust` 暂无必需 patch。
+当前状态：`server/backend/claude_code` 有 AgentServer bridge patch。
 
 本地路径：
 
 ```text
 server/backend/claude_code
-server/backend/claude_code_rust
 ```
 
 已修改文件：

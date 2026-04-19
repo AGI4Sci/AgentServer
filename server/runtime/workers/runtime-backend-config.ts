@@ -1,111 +1,30 @@
 import { writeFileSync } from 'fs';
 import { join } from 'path';
 import { ensureBackendStateDirs, getBackendConfigPath } from '../../../core/runtime/backend-paths.js';
-import {
-  normalizeConfiguredRuntimeModelIdentifier,
-  resolveConfiguredRuntimeModelName,
-  resolveConfiguredRuntimeModelProvider,
-} from '../model-spec.js';
 import type { RuntimeModelInput } from '../model-spec.js';
-import { listConfiguredLlmEndpoints, loadOpenTeamConfig } from '../../utils/openteam-config.js';
+import {
+  type ModelRuntimeConnection,
+  type ModelRuntimeConnectionOverride,
+  resolveModelRuntimeConnection,
+  resolveModelRuntimeConnectionCandidates,
+} from '../model-runtime-resolver.js';
 
-export type RuntimeBackendConnection = {
-  model: string | null;
-  provider: string | null;
-  modelName: string | null;
-  baseUrl: string | null;
-  apiKey: string | null;
-};
+export type RuntimeBackendConnection = ModelRuntimeConnection;
 
 function trim(value: string | null | undefined): string | null {
   const normalized = value?.trim();
   return normalized ? normalized : null;
 }
 
-function escapeToml(value: string): string {
-  return value
-    .replaceAll('\\', '\\\\')
-    .replaceAll('"', '\\"');
-}
-
-function resolveFallbackRuntimeModelInput(): RuntimeModelInput {
-  const config = loadOpenTeamConfig();
-  return {
-    model: trim(config.llm.model),
-    modelProvider: trim(config.llm.provider),
-    modelName: trim(config.llm.model),
-  };
-}
-
 export function resolveRuntimeBackendConnection(input: RuntimeModelInput): RuntimeBackendConnection {
-  return resolveRuntimeBackendConnectionCandidates(input)[0] ?? {
-    model: null,
-    provider: null,
-    modelName: null,
-    baseUrl: null,
-    apiKey: null,
-  };
+  return resolveModelRuntimeConnection(input);
 }
 
 export function resolveRuntimeBackendConnectionCandidates(
   input: RuntimeModelInput,
-  override?: Partial<RuntimeBackendConnection> | null,
+  override?: ModelRuntimeConnectionOverride | null,
 ): RuntimeBackendConnection[] {
-  const config = loadOpenTeamConfig();
-  const fallbackModelInput = resolveFallbackRuntimeModelInput();
-  const explicitRequestedModel = normalizeConfiguredRuntimeModelIdentifier(input) || null;
-  const explicitRequestedProvider = resolveConfiguredRuntimeModelProvider(input) || null;
-  const explicitRequestedModelName = resolveConfiguredRuntimeModelName(input) || null;
-  const defaultRequestedModel = normalizeConfiguredRuntimeModelIdentifier(fallbackModelInput) || null;
-  const defaultRequestedProvider = resolveConfiguredRuntimeModelProvider(fallbackModelInput) || null;
-  const defaultRequestedModelName = resolveConfiguredRuntimeModelName(fallbackModelInput) || null;
-  const candidates: RuntimeBackendConnection[] = [];
-  const seen = new Set<string>();
-  const pushCandidate = (candidate: RuntimeBackendConnection): void => {
-    const key = [
-      candidate.baseUrl || '',
-      candidate.modelName || '',
-      candidate.apiKey || '',
-      candidate.provider || '',
-    ].join('::');
-    if (!candidate.baseUrl || !candidate.modelName || seen.has(key)) {
-      return;
-    }
-    seen.add(key);
-    candidates.push(candidate);
-  };
-
-  if (input.llmEndpoint?.baseUrl || input.llmEndpoint?.modelName) {
-    pushCandidate({
-      model: explicitRequestedModel || trim(input.llmEndpoint?.modelName) || defaultRequestedModel,
-      provider: explicitRequestedProvider || trim(input.llmEndpoint?.provider) || defaultRequestedProvider,
-      modelName: explicitRequestedModelName || trim(input.llmEndpoint?.modelName) || defaultRequestedModelName,
-      baseUrl: trim(input.llmEndpoint?.baseUrl),
-      apiKey: trim(input.llmEndpoint?.apiKey),
-    });
-  }
-
-  if (override?.baseUrl || override?.modelName) {
-    pushCandidate({
-      model: trim(override.model) || explicitRequestedModel || defaultRequestedModel,
-      provider: trim(override.provider) || explicitRequestedProvider || defaultRequestedProvider,
-      modelName: trim(override.modelName) || explicitRequestedModelName || defaultRequestedModelName,
-      baseUrl: trim(override.baseUrl),
-      apiKey: trim(override.apiKey),
-    });
-  }
-
-  for (const endpoint of listConfiguredLlmEndpoints(config)) {
-    pushCandidate({
-      model: explicitRequestedModel || trim(endpoint.model) || defaultRequestedModel,
-      provider: explicitRequestedProvider || trim(endpoint.provider) || defaultRequestedProvider,
-      modelName: explicitRequestedModelName || trim(endpoint.model) || defaultRequestedModelName,
-      baseUrl: trim(endpoint.baseUrl),
-      apiKey: trim(endpoint.apiKey),
-    });
-  }
-
-  return candidates;
+  return resolveModelRuntimeConnectionCandidates(input, override);
 }
 
 function resolveModelsUrl(baseUrl: string): string {
@@ -187,6 +106,8 @@ export async function resolveHealthyRuntimeBackendConnection(
     modelName: null,
     baseUrl: null,
     apiKey: null,
+    authType: 'unknown',
+    source: 'openteam-config',
   };
   const timeoutMs = Math.max(200, options?.timeoutMs ?? 1_500);
   for (const candidate of candidates) {
@@ -244,37 +165,5 @@ export function ensureOpenClawRuntimeConfig(params: {
   const serialized = `${JSON.stringify(config, null, 2)}\n`;
   writeFileSync(configPath, serialized, 'utf-8');
   writeFileSync(legacyConfigPath, serialized, 'utf-8');
-  return configPath;
-}
-
-export function ensureZeroClawRuntimeConfig(params: {
-  stateDir: string;
-  gatewayPort: number;
-  model: RuntimeModelInput;
-}): string {
-  const connection = resolveRuntimeBackendConnection(params.model);
-  const provider = connection.provider || 'openrouter';
-  const resolvedProvider = provider === 'custom' && connection.baseUrl
-    ? `custom:${connection.baseUrl}`
-    : provider;
-  const modelName = connection.modelName || 'default-model';
-  const configPath = join(params.stateDir, 'config.toml');
-  const lines = [
-    connection.apiKey ? `api_key = "${escapeToml(connection.apiKey)}"` : null,
-    `default_provider = "${escapeToml(resolvedProvider)}"`,
-    `default_model = "${escapeToml(modelName)}"`,
-    'default_temperature = 0.2',
-    '',
-    '[gateway]',
-    'host = "127.0.0.1"',
-    `port = ${params.gatewayPort}`,
-    'require_pairing = false',
-    'allow_public_bind = false',
-    'session_persistence = true',
-    'session_ttl_hours = 0',
-    '',
-  ].filter((value): value is string => value != null);
-
-  writeFileSync(configPath, `${lines.join('\n')}`, 'utf-8');
   return configPath;
 }

@@ -4,7 +4,7 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'http';
-import { BACKEND_CATALOG } from '../../core/runtime/backend-catalog.js';
+import { BACKEND_CATALOG, DEFAULT_BACKEND } from '../../core/runtime/backend-catalog.js';
 import { handleGetTeamDesign, handleSaveTeamDesign } from './teams/design.js';
 import { handleGetTeamBlackboard, handleGetTeamBlackboardRequestExplain } from './teams/blackboard.js';
 import { handleBlackboardStubRoutes } from './teams/blackboard-stubs.js';
@@ -35,7 +35,7 @@ export async function handleTeamRoutes(
     res.end(JSON.stringify({
       ok: true,
       data: {
-        defaultBackend: BACKEND_CATALOG[0]?.id || 'claude-code',
+        defaultBackend: DEFAULT_BACKEND,
         backends: BACKEND_CATALOG,
       },
     }));

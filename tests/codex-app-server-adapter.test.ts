@@ -118,6 +118,164 @@ rl.on('line', (line) => {
   assert.equal(stageResult?.result.finalText, 'done');
 });
 
+test('codex app-server adapter resolves native model through ModelRuntimeConnection', async () => {
+  await withModelEnv({
+    AGENT_SERVER_MODEL_PROVIDER: 'openai',
+    AGENT_SERVER_MODEL_NAME: 'gpt-codex-native',
+  }, async () => {
+    const events = await runCodexModelSmoke({
+      expectedModel: 'gpt-codex-native',
+      expectedModelProvider: 'openai',
+    });
+    const stageResult = events.find((event) => event.type === 'stage-result');
+    assert.equal(stageResult?.result.status, 'completed');
+  });
+});
+
+test('codex app-server adapter does not pass OpenAI-compatible model names into native app-server', async () => {
+  await withModelEnv({
+    AGENT_SERVER_MODEL_PROVIDER: 'openai-compatible',
+    AGENT_SERVER_MODEL_NAME: 'proxy-only-model',
+  }, async () => {
+    const events = await runCodexModelSmoke({ expectedModel: null });
+    const stageResult = events.find((event) => event.type === 'stage-result');
+    assert.equal(stageResult?.result.status, 'completed');
+  });
+});
+
+test('codex app-server adapter maps OpenAI-compatible endpoints through Codex custom provider', async () => {
+  await withModelEnv({
+    AGENT_SERVER_MODEL_PROVIDER: 'openai-compatible',
+    AGENT_SERVER_MODEL_NAME: 'proxy-model',
+    AGENT_SERVER_MODEL_BASE_URL: 'http://127.0.0.1:4555/v1',
+    AGENT_SERVER_MODEL_API_KEY: 'test-key',
+  }, async () => {
+    const events = await runCodexModelSmoke({
+      expectedModel: 'proxy-model',
+      expectedModelProvider: 'openteam_local',
+      expectCustomProviderConfig: true,
+    });
+    const stageResult = events.find((event) => event.type === 'stage-result');
+    assert.equal(stageResult?.result.status, 'completed');
+  });
+});
+
+async function runCodexModelSmoke(options: {
+  expectedModel: string | null;
+  expectedModelProvider?: string | null;
+  expectCustomProviderConfig?: boolean;
+}) {
+  const dir = await mkdtemp(join(tmpdir(), 'agent-server-codex-model-'));
+  const fakeServerPath = join(dir, 'fake-codex-model-app-server.mjs');
+  await writeFile(fakeServerPath, `
+import { createInterface } from 'node:readline';
+
+const expectedModel = ${JSON.stringify(options.expectedModel)};
+const expectedModelProvider = ${JSON.stringify(options.expectedModelProvider ?? null)};
+const expectCustomProviderConfig = ${JSON.stringify(Boolean(options.expectCustomProviderConfig))};
+const argv = process.argv.slice(2).join('\\n');
+if (expectCustomProviderConfig && !argv.includes('model_provider="openteam_local"')) {
+  console.error('missing custom provider config in argv: ' + argv);
+  process.exit(2);
+}
+const rl = createInterface({ input: process.stdin });
+const write = (message) => process.stdout.write(JSON.stringify(message) + '\\n');
+
+rl.on('line', (line) => {
+  const message = JSON.parse(line);
+  if (message.method === 'initialize') {
+    write({ id: message.id, result: {} });
+    return;
+  }
+  if (message.method === 'initialized') {
+    return;
+  }
+  if (message.method === 'thread/start') {
+    write({ id: message.id, result: { thread: { id: 'thread-1' } } });
+    return;
+  }
+  if (message.method === 'turn/start') {
+    if ((message.params?.model || null) !== expectedModel) {
+      write({ id: message.id, error: { message: 'unexpected model ' + JSON.stringify(message.params?.model || null) } });
+      return;
+    }
+    if ((message.params?.modelProvider || null) !== expectedModelProvider) {
+      write({ id: message.id, error: { message: 'unexpected modelProvider ' + JSON.stringify(message.params?.modelProvider || null) } });
+      return;
+    }
+    write({ id: message.id, result: { turn: { id: 'turn-1' } } });
+    write({ method: 'item/agentMessage/delta', params: { threadId: 'thread-1', turnId: 'turn-1', itemId: 'msg-1', delta: 'model-ok' } });
+    write({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } } });
+  }
+});
+`, 'utf8');
+
+  const adapter = new CodexAppServerAgentBackendAdapter({
+    command: process.execPath,
+    args: [fakeServerPath],
+  });
+  const sessionRef = await adapter.startSession({
+    agentServerSessionId: 'session-1',
+    backend: 'codex',
+    workspace: dir,
+    scope: 'stage',
+  });
+
+  const events = [];
+  for await (const event of adapter.runTurn({
+    sessionRef,
+    handoff: {
+      runId: 'run-1',
+      stageId: 'stage-1',
+      stageType: 'implement',
+      targetBackend: 'codex',
+      stageInstructions: 'run a model smoke turn',
+      canonicalContext: [],
+      priorStageSummaries: [],
+      workspaceFacts: {
+        root: dir,
+        dirtyFiles: [],
+      },
+      backendRunRecords: [],
+      openQuestions: [],
+    },
+  })) {
+    events.push(event);
+  }
+  await adapter.dispose({ sessionRef });
+  return events;
+}
+
+async function withModelEnv(values: Record<string, string>, fn: () => Promise<void>): Promise<void> {
+  const keys = [
+    'AGENT_SERVER_MODEL',
+    'AGENT_SERVER_MODEL_PROVIDER',
+    'AGENT_SERVER_MODEL_NAME',
+    'AGENT_SERVER_MODEL_BASE_URL',
+    'AGENT_SERVER_MODEL_API_KEY',
+    'AGENT_SERVER_CODEX_MODEL',
+  ];
+  const snapshot = new Map<string, string | undefined>();
+  for (const key of keys) {
+    snapshot.set(key, process.env[key]);
+    delete process.env[key];
+  }
+  for (const [key, value] of Object.entries(values)) {
+    process.env[key] = value;
+  }
+  try {
+    await fn();
+  } finally {
+    for (const [key, value] of snapshot) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+}
+
 test('codex app-server adapter keeps retryable app-server errors non-terminal', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'agent-server-codex-retry-'));
   const fakeServerPath = join(dir, 'fake-codex-retry-app-server.mjs');

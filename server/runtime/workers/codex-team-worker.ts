@@ -3,13 +3,13 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { createInterface } from 'readline';
 import { ensureBackendStateDirs } from '../../../core/runtime/backend-paths.js';
-import { getCodexAdapterBaseUrl } from '../../runtime-supervisor/codex-chat-responses-adapter.js';
 import {
   normalizeConfiguredRuntimeModelIdentifier,
   resolveConfiguredRuntimeModelName,
   resolveConfiguredRuntimeModelProvider,
-  resolveRuntimeModelName,
 } from '../model-spec.js';
+import { resolveCodexRuntimeModelSelection } from '../codex-model-runtime.js';
+import { ensureRuntimeSupervisor } from '../supervisor-client.js';
 import { resolveHealthyRuntimeBackendConnection } from './runtime-backend-config.js';
 import type { SessionOutput } from '../session-types.js';
 import { formatRuntimeError } from '../session-types.js';
@@ -237,55 +237,6 @@ function requestClearlyDemandsRealTools(request: WorkerRunRequest): boolean {
     || text.includes('请使用可用工具')
     || text.includes('当前工作目录')
     || text.includes('不要猜测');
-}
-
-function resolveModel(input?: { model?: string | null; modelName?: string | null }, fallbackModel?: string | null): string | null {
-  const configuredModel = fallbackModel || loadOpenTeamConfig().llm.model;
-  return input?.modelName?.trim()
-    || resolveRuntimeModelName(input?.model)
-    || resolveRuntimeModelName(configuredModel)
-    || 'glm-5-fp8'
-    || null;
-}
-
-function escapeTomlBasicString(value: string): string {
-  return value
-    .replace(/\\/g, '\\\\')
-    .replace(/"/g, '\\"');
-}
-
-function shouldUseCustomCodexProvider(baseUrl: string | null): boolean {
-  if (!baseUrl) {
-    return false;
-  }
-  if (process.env.OPENTEAM_CODEX_FORCE_OPENAI_PROVIDER === '1') {
-    return false;
-  }
-  return true;
-}
-
-function buildCodexProviderOverrides(baseUrl: string | null): {
-  configArgs: string[];
-  modelProvider: string | null;
-} {
-  if (!shouldUseCustomCodexProvider(baseUrl)) {
-    return {
-      configArgs: [],
-      modelProvider: null,
-    };
-  }
-
-  const providerId = loadOpenTeamConfig().runtime.codex.providerId.trim() || 'openteam_local';
-  const escapedBaseUrl = escapeTomlBasicString(getCodexAdapterBaseUrl());
-  return {
-    configArgs: [
-      '--config',
-      `model_provider="${providerId}"`,
-      '--config',
-      `model_providers.${providerId}={name="OpenTeam Local",base_url="${escapedBaseUrl}",wire_api="responses",supports_websockets=false}`,
-    ],
-    modelProvider: providerId,
-  };
 }
 
 function hasCodexCommandAvailable(): boolean {
@@ -595,9 +546,16 @@ export class CodexTeamWorker {
     const runtimeConnection = await resolveHealthyRuntimeBackendConnection(request.options);
     const baseUrl = runtimeConnection.baseUrl;
     const apiKey = runtimeConnection.apiKey;
-    const model = resolveModel(request.options, runtimeConnection.modelName);
-    const providerOverrides = buildCodexProviderOverrides(baseUrl);
-    const runtimeModelProvider = providerOverrides.modelProvider || runtimeConnection.provider || request.options.modelProvider || null;
+    const modelSelection = resolveCodexRuntimeModelSelection({
+      connection: runtimeConnection,
+      input: request.options,
+      explicitCodexModel: process.env.AGENT_SERVER_CODEX_MODEL,
+    });
+    const model = modelSelection.model;
+    const runtimeModelProvider = modelSelection.modelProvider || runtimeConnection.provider || request.options.modelProvider || null;
+    if (modelSelection.route === 'custom-provider') {
+      await ensureRuntimeSupervisor();
+    }
     const useDirectChatCompletions = this.shouldUseDirectChatCompletions(request, baseUrl);
     const requiresRealTools = requestClearlyDemandsRealTools(request);
 
@@ -683,7 +641,7 @@ export class CodexTeamWorker {
       if (baseUrl) {
         commandArgs.push('--config', `openai_base_url="${baseUrl}"`);
       }
-      commandArgs.push(...providerOverrides.configArgs);
+      commandArgs.push(...modelSelection.configArgs);
       commandArgs.push('--config', 'approval_policy="never"');
       commandArgs.push('--config', 'web_search="disabled"');
       commandArgs.push('--config', 'features.plugins=false');
@@ -700,6 +658,7 @@ export class CodexTeamWorker {
         requestModelName: request.options.modelName ?? null,
         resolvedDirectRuntimeModel: normalizeConfiguredRuntimeModelIdentifier(request.options) || null,
         runtimeModelProvider,
+        runtimeModelRoute: modelSelection.route,
         resolvedModelName: model,
         useDirectChatCompletions,
         requiresRealTools,
@@ -1494,9 +1453,16 @@ export class CodexTeamWorker {
     const runtimeConnection = await resolveHealthyRuntimeBackendConnection(options);
     const baseUrl = runtimeConnection.baseUrl;
     const apiKey = runtimeConnection.apiKey;
-    const model = resolveModel(options, runtimeConnection.modelName);
-    const providerOverrides = buildCodexProviderOverrides(baseUrl);
-    const runtimeModelProvider = providerOverrides.modelProvider || runtimeConnection.provider || options.modelProvider || null;
+    const modelSelection = resolveCodexRuntimeModelSelection({
+      connection: runtimeConnection,
+      input: options,
+      explicitCodexModel: process.env.AGENT_SERVER_CODEX_MODEL,
+    });
+    const model = modelSelection.model;
+    const runtimeModelProvider = modelSelection.modelProvider || runtimeConnection.provider || options.modelProvider || null;
+    if (modelSelection.route === 'custom-provider') {
+      await ensureRuntimeSupervisor();
+    }
     const workingDirectory = options.cwd || process.cwd();
     const { stateDir } = ensureBackendStateDirs('codex', ['home', 'tmp', 'sqlite', 'config', 'cache']);
     const { command, args, cwd: launchCwd, env: launchEnv } = resolveCodexLaunchSpec();
@@ -1504,7 +1470,7 @@ export class CodexTeamWorker {
     if (baseUrl) {
       commandArgs.push('--config', `openai_base_url="${baseUrl}"`);
     }
-    commandArgs.push(...providerOverrides.configArgs);
+    commandArgs.push(...modelSelection.configArgs);
     commandArgs.push('--config', 'approval_policy="never"');
     commandArgs.push('--config', 'web_search="disabled"');
     commandArgs.push('--config', 'sandbox_workspace_write.network_access=true');
@@ -1516,6 +1482,7 @@ export class CodexTeamWorker {
       commandArgs,
       baseUrl,
       runtimeModelProvider,
+      runtimeModelRoute: modelSelection.route,
       teamId: options.teamId,
       agentId: options.agentId,
     });

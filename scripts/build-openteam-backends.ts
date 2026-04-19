@@ -7,7 +7,7 @@ const backendDir = join(root, 'server', 'backend');
 const binDir = resolve(process.env.OPENTEAM_BACKEND_BIN_DIR?.trim() || join(backendDir, 'bin'));
 const isWindows = process.platform === 'win32';
 const selectedBackendNames = new Set(
-  (process.env.AGENT_SERVER_BUILD_BACKENDS || 'codex,claude_code_rust,zeroclaw,claude_code,openclaw,hermes_agent')
+  (process.env.AGENT_SERVER_BUILD_BACKENDS || 'codex,claude_code,openclaw,hermes_agent')
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean),
@@ -27,18 +27,6 @@ const rustTargets: RustBuildTarget[] = [
     crateDir: join(backendDir, 'codex', 'codex-rs'),
     binaryName: 'codex',
     cargoArgs: ['build', '--release', '-p', 'codex-cli', '--bin', 'codex'],
-  },
-  {
-    name: 'openteam_claude_code_rust',
-    crateDir: join(backendDir, 'claude_code_rust'),
-    binaryName: 'claude',
-    cargoArgs: ['build', '--release', '--bin', 'claude'],
-  },
-  {
-    name: 'openteam_zeroclaw',
-    crateDir: join(backendDir, 'zeroclaw'),
-    binaryName: 'zeroclaw',
-    cargoArgs: ['build', '--release', '--bin', 'zeroclaw'],
   },
 ];
 

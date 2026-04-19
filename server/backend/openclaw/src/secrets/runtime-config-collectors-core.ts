@@ -1,10 +1,11 @@
-import type { OpenClawConfig } from "../config/config.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { MediaUnderstandingModelConfig } from "../config/types.tools.js";
 import {
-  matchesMediaEntryCapability,
+  resolveConfiguredMediaEntryCapabilities,
   resolveEffectiveMediaEntryCapabilities,
 } from "../media-understanding/entry-capabilities.js";
-import { buildMediaUnderstandingRegistry } from "../media-understanding/provider-registry.js";
+import { buildMediaUnderstandingCapabilityRegistry } from "../media-understanding/provider-capability-registry.js";
+import { normalizeOptionalLowercaseString } from "../shared/string-coerce.js";
 import { collectTtsApiKeyAssignments } from "./runtime-config-collectors-tts.js";
 import { evaluateGatewayAuthSurfaceStates } from "./runtime-gateway-auth-surfaces.js";
 import {
@@ -17,6 +18,7 @@ import { isRecord } from "./shared.js";
 type ProviderLike = {
   apiKey?: unknown;
   headers?: unknown;
+  request?: unknown;
   enabled?: unknown;
 };
 
@@ -52,21 +54,33 @@ function collectModelProviderAssignments(params: {
       },
     });
     const headers = isRecord(provider.headers) ? provider.headers : undefined;
-    if (!headers) {
-      continue;
+    if (headers) {
+      for (const [headerKey, headerValue] of Object.entries(headers)) {
+        collectSecretInputAssignment({
+          value: headerValue,
+          path: `models.providers.${providerId}.headers.${headerKey}`,
+          expected: "string",
+          defaults: params.defaults,
+          context: params.context,
+          active: providerIsActive,
+          inactiveReason: "provider is disabled.",
+          apply: (value) => {
+            headers[headerKey] = value;
+          },
+        });
+      }
     }
-    for (const [headerKey, headerValue] of Object.entries(headers)) {
-      collectSecretInputAssignment({
-        value: headerValue,
-        path: `models.providers.${providerId}.headers.${headerKey}`,
-        expected: "string",
+
+    const request = isRecord(provider.request) ? provider.request : undefined;
+    if (request) {
+      collectProviderRequestAssignments({
+        request,
+        pathPrefix: `models.providers.${providerId}.request`,
         defaults: params.defaults,
         context: params.context,
         active: providerIsActive,
         inactiveReason: "provider is disabled.",
-        apply: (value) => {
-          headers[headerKey] = value;
-        },
+        collectTransportSecrets: true,
       });
     }
   }
@@ -295,6 +309,7 @@ function collectProviderRequestAssignments(params: {
   context: ResolverContext;
   active?: boolean;
   inactiveReason?: string;
+  collectTransportSecrets?: boolean;
 }): void {
   const headers = isRecord(params.request.headers) ? params.request.headers : undefined;
   if (headers) {
@@ -362,15 +377,17 @@ function collectProviderRequestAssignments(params: {
     }
   };
 
-  collectTlsAssignments(
-    isRecord(params.request.tls) ? params.request.tls : undefined,
-    `${params.pathPrefix}.tls`,
-  );
-  const proxy = isRecord(params.request.proxy) ? params.request.proxy : undefined;
-  collectTlsAssignments(
-    isRecord(proxy?.tls) ? proxy.tls : undefined,
-    `${params.pathPrefix}.proxy.tls`,
-  );
+  if (params.collectTransportSecrets !== false) {
+    collectTlsAssignments(
+      isRecord(params.request.tls) ? params.request.tls : undefined,
+      `${params.pathPrefix}.tls`,
+    );
+    const proxy = isRecord(params.request.proxy) ? params.request.proxy : undefined;
+    collectTlsAssignments(
+      isRecord(proxy?.tls) ? proxy.tls : undefined,
+      `${params.pathPrefix}.proxy.tls`,
+    );
+  }
 }
 
 function collectMediaRequestAssignments(params: {
@@ -384,7 +401,11 @@ function collectMediaRequestAssignments(params: {
     return;
   }
 
-  const providerRegistry = buildMediaUnderstandingRegistry(undefined, params.config);
+  let providerRegistry: ReturnType<typeof buildMediaUnderstandingCapabilityRegistry> | undefined;
+  const getProviderRegistry = () => {
+    providerRegistry ??= buildMediaUnderstandingCapabilityRegistry(params.config);
+    return providerRegistry;
+  };
   const capabilityKeys = ["audio", "image", "video"] as const;
   const isCapabilityEnabled = (capability: (typeof capabilityKeys)[number]) =>
     (isRecord(media[capability]) ? media[capability] : undefined)?.enabled !== false;
@@ -418,11 +439,14 @@ function collectMediaRequestAssignments(params: {
 
   collectModelAssignments(media.models, "tools.media.models", (rawModel) => {
     const entry = rawModel as MediaUnderstandingModelConfig;
-    const capabilities = resolveEffectiveMediaEntryCapabilities({
-      entry,
-      source: "shared",
-      providerRegistry,
-    });
+    const configuredCapabilities = resolveConfiguredMediaEntryCapabilities(entry);
+    const capabilities =
+      configuredCapabilities ??
+      resolveEffectiveMediaEntryCapabilities({
+        entry,
+        source: "shared",
+        providerRegistry: getProviderRegistry(),
+      });
     if (!capabilities || capabilities.length === 0) {
       return {
         active: false,
@@ -453,12 +477,11 @@ function collectMediaRequestAssignments(params: {
     collectModelAssignments(section?.models, `tools.media.${capability}.models`, (rawModel) => ({
       active:
         active &&
-        matchesMediaEntryCapability({
-          entry: rawModel as MediaUnderstandingModelConfig,
-          source: "capability",
-          capability,
-          providerRegistry,
-        }),
+        (() => {
+          const entry = rawModel as MediaUnderstandingModelConfig;
+          const configuredCapabilities = resolveConfiguredMediaEntryCapabilities(entry);
+          return configuredCapabilities ? configuredCapabilities.includes(capability) : true;
+        })(),
       inactiveReason: active
         ? `${capability} media model is filtered out by its configured capabilities.`
         : inactiveReason,
@@ -542,7 +565,8 @@ function collectSandboxSshAssignments(params: {
       "docker";
     const effectiveMode =
       (typeof sandbox?.mode === "string" ? sandbox.mode : undefined) ?? defaultsMode ?? "off";
-    const active = effectiveBackend.trim().toLowerCase() === "ssh" && effectiveMode !== "off";
+    const active =
+      normalizeOptionalLowercaseString(effectiveBackend) === "ssh" && effectiveMode !== "off";
     for (const key of ["identityData", "certificateData", "knownHostsData"] as const) {
       if (ssh && Object.prototype.hasOwnProperty.call(ssh, key)) {
         collectSecretInputAssignment({
@@ -568,7 +592,7 @@ function collectSandboxSshAssignments(params: {
   }
 
   const defaultsActive =
-    (defaultsBackend?.trim().toLowerCase() === "ssh" && defaultsMode !== "off") ||
+    (normalizeOptionalLowercaseString(defaultsBackend) === "ssh" && defaultsMode !== "off") ||
     inheritedDefaultsUsage.identityData ||
     inheritedDefaultsUsage.certificateData ||
     inheritedDefaultsUsage.knownHostsData;

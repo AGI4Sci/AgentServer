@@ -26,6 +26,8 @@ export AGENT_SERVER_ENABLED_BACKENDS=openteam_agent,codex,claude-code,hermes-age
 export PORT=8080
 ```
 
+`codex`、`claude-code`、`gemini`、`self-hosted-agent/openteam_agent` 是 strategic 主线；`openclaw` 和 `hermes-agent` 可以作为 ecosystem entry backend 显式启用，用于迁移、流量入口、demo 和对照实验。
+
 ## Workspace Policy
 
 Cloud AgentServer cannot directly operate on a user's laptop files or SSH GPU files unless a worker/executor is registered for that machine. The long-term model is:
@@ -220,9 +222,8 @@ The prune script removes large regenerable artifacts such as:
 
 ```text
 server/backend/codex/codex-rs/target
-server/backend/zeroclaw/target
-server/backend/claude_code_rust/target
 server/backend/hermes_agent/web/node_modules
+server/backend/openclaw/.next
 ```
 
 ## Deployment Check
