@@ -8,6 +8,7 @@
 - 设计原则、架构说明、接口语义写在 `docs/architecture.md` / `docs/adapter-contract.md`；任务拆解和执行状态写在本文档。
 - 文档入口、导航和主题归档统一放在 `docs/` 目录。
 - AgentServer Core 保持通用、稳定、简洁；复杂自进化决策不进入核心。
+- 代码路径必须尽量保持唯一真相源：引入新链路时必须删除、合并或明确降级旧链路，避免两个并行逻辑长期共存造成冗余和误导；实现应优先通用机制，不为单个临时案例堆专用分支。
 - 开发过程中发现新的 TODO，优先追加到本文档。
 
 ## 当前状态
@@ -50,7 +51,7 @@
 - Readiness 会识别本地 env 模板中的 `replace-with-*` 占位符，避免把未替换的 key/model 误判为已配置。
 - Readiness 已提供常用快捷脚本：Codex-only、Gemini-only、Claude/self-hosted、Claude/self-hosted smoke LLM plumbing。
 - Codex 已通过真实 isolated live readiness；Claude Code / 自研 agent 已通过 smoke LLM plumbing readiness；Gemini SDK module 与 shape preflight 已通过。
-- 官方 backend 源码目录保持干净；必要 upstream patch 原则和 Gemini upstream build debt 已记录在 `docs/upstream-backend-overrides.md`。
+- 官方 backend 源码默认保持干净；当前 Claude Code bridge 存在已登记的小 patch，必要 upstream patch 原则、重放线索和 Gemini upstream build debt 已记录在 `docs/upstream-backend-overrides.md`。
 
 #### 剩余 TODO
 - [ ] 配置 Gemini/Google auth input 后跑 Gemini live readiness。可用任一项：`GEMINI_API_KEY`、`GOOGLE_API_KEY`、`GOOGLE_APPLICATION_CREDENTIALS`、`~/.gemini/oauth_creds.json`；配置后运行 `npm run check:agent-backend-adapters:ready:gemini`。
