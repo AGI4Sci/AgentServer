@@ -68,6 +68,12 @@ AGENT_SERVER_ADAPTER_READINESS_DRY_RUN=1 npm run check:agent-backend-adapters:re
 AGENT_SERVER_LIVE_ADAPTER_SMOKE_TIMEOUT_MS=600000 npm run check:agent-backend-adapters:ready
 ```
 
+readiness runner 外层还会给每个 preflight/live step 加硬超时，默认 360 秒，用于防止某个 backend bridge 没有正确返回或没有传播内部 timeout。需要更快失败时：
+
+```bash
+AGENT_SERVER_ADAPTER_READINESS_STEP_TIMEOUT_MS=120000 npm run check:agent-backend-adapters:ready
+```
+
 ## Claude Code / Self-Hosted Endpoint
 
 Claude Code bridge 和自研 agent 当前通过 AgentServer supervisor path 使用 OpenAI-compatible LLM endpoint。可以用 `openteam.json` 配置，也可以临时用环境变量覆盖：

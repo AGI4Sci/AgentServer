@@ -46,6 +46,20 @@ test('readiness dry-run plans each selected backend independently', async () => 
   assert.doesNotMatch(result.stdout, /AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS=codex,gemini/);
 });
 
+test('readiness dry-run exposes per-step hard timeout', async () => {
+  const result = await execFileAsync('node', ['--import', 'tsx', 'scripts/check-agent-backend-readiness.ts'], {
+    env: {
+      ...process.env,
+      AGENT_SERVER_ADAPTER_READINESS_DRY_RUN: '1',
+      AGENT_SERVER_ADAPTER_READINESS_STEP_TIMEOUT_MS: '12345',
+      AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS: 'claude-code',
+    },
+  });
+
+  assert.match(result.stdout, /PLAN_TIMEOUT claude-code strict preflight: 12345ms/);
+  assert.match(result.stdout, /PLAN_TIMEOUT claude-code live smoke: 12345ms/);
+});
+
 test('readiness env file loads local settings without printing secret values', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'agent-readiness-env-'));
   const envPath = join(dir, 'readiness.local.env');

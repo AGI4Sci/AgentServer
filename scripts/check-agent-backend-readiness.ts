@@ -7,6 +7,7 @@ type Step = {
   command: string;
   args: string[];
   env?: NodeJS.ProcessEnv;
+  timeoutMs?: number;
 };
 
 type BackendPlan = {
@@ -27,6 +28,7 @@ type StrategicBackend = typeof STRATEGIC_BACKENDS[number];
 const DEFAULT_READINESS_ENV_FILE = '.agent-backend-readiness.local.env';
 
 const loadedEnvFile = loadReadinessEnvFile(resolveReadinessEnvFile(process.env.AGENT_SERVER_ADAPTER_READINESS_ENV_FILE));
+const stepTimeoutMs = parsePositiveInt(process.env.AGENT_SERVER_ADAPTER_READINESS_STEP_TIMEOUT_MS, 360_000);
 const baseEnv = {
   ...process.env,
   AGENT_SERVER_CODEX_MODEL: process.env.AGENT_SERVER_CODEX_MODEL || 'gpt-5.4',
@@ -135,29 +137,75 @@ function printPlanStep(step: Step): void {
   if (step.env?.AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS) {
     console.log(`PLAN_ENV ${step.name}: AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS=${step.env.AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS}`);
   }
+  console.log(`PLAN_TIMEOUT ${step.name}: ${resolveStepTimeoutMs(step)}ms`);
 }
 
 function runStep(step: Step): Promise<number> {
   return run(step.command, step.args, {
     ...baseEnv,
     ...(step.env || {}),
-  });
+  }, resolveStepTimeoutMs(step), step.name);
 }
 
-function run(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<number> {
+function resolveStepTimeoutMs(step: Step): number {
+  return step.timeoutMs ?? stepTimeoutMs;
+}
+
+function run(command: string, args: string[], env: NodeJS.ProcessEnv, timeoutMs: number, label: string): Promise<number> {
   return new Promise((resolve) => {
+    let settled = false;
     const child = spawn(command, args, {
       env,
       stdio: 'inherit',
+      detached: process.platform !== 'win32',
     });
+    const timeout = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      console.error(`[agent-backend-readiness] ${label} timed out after ${timeoutMs}ms; terminating child process`);
+      terminateChild(child.pid);
+      resolve(124);
+    }, timeoutMs);
     child.on('error', (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
       console.error(`[agent-backend-readiness] failed to start ${command}: ${error.message}`);
       resolve(1);
     });
     child.on('exit', (code) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
       resolve(code ?? 1);
     });
   });
+}
+
+function terminateChild(pid: number | undefined): void {
+  if (!pid) {
+    return;
+  }
+  try {
+    process.kill(process.platform === 'win32' ? pid : -pid, 'SIGTERM');
+  } catch {
+    try {
+      process.kill(pid, 'SIGTERM');
+    } catch {
+      // Best effort; the readiness process will still fail with timeout code 124.
+    }
+  }
+}
+
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
 }
 
 function parseSelectedBackends(value: string | undefined): StrategicBackend[] {
