@@ -46,13 +46,13 @@
 - Agent-backend adapter contract、profile registry、adapter registry/factory、native session binding、approval/sandbox/failure-mode 语义已落地。
 - Codex app-server、Claude Code bridge、Gemini SDK、自研 agent 四类 strategic adapter 原型已实现，并通过 contract smoke。
 - Run/Stage/handoff/ledger/multi-stage opt-in 执行路径已落地，backend 原生事件可映射为 AgentServer normalized events/result。
-- Readiness/preflight/live smoke 已支持 backend 子集、backend-by-backend 矩阵、strict/advisory warning 区分、Codex isolated `CODEX_HOME`、临时 smoke LLM、可覆盖超时、自动加载本地未提交 env 文件。
+- Readiness/preflight/live smoke 已支持 backend 子集、backend-by-backend 矩阵、strict/advisory warning 区分、Codex isolated `CODEX_HOME`、临时 smoke LLM、可覆盖超时、初始化并自动加载本地未提交 env 文件。
 - Readiness 已提供常用快捷脚本：Codex-only、Gemini-only、Claude/self-hosted、Claude/self-hosted smoke LLM plumbing。
 - Codex 已通过真实 isolated live readiness；Claude Code / 自研 agent 已通过 smoke LLM plumbing readiness；Gemini SDK module 与 shape preflight 已通过。
 - 官方 backend 源码目录保持干净；必要 upstream patch 原则和 Gemini upstream build debt 已记录在 `docs/upstream-backend-overrides.md`。
 
 #### 剩余 TODO
-- [ ] 配置可用 OpenAI-compatible endpoint，供 Claude Code bridge 和自研 agent 跑真实 live readiness。推荐写入自动加载的 `.agent-backend-readiness.local.env`：`AGENT_SERVER_ADAPTER_LLM_BASE_URL`、`AGENT_SERVER_ADAPTER_LLM_API_KEY`、`AGENT_SERVER_ADAPTER_LLM_MODEL`；配置后运行 `npm run check:agent-backend-adapters:ready:llm-backends`。
+- [ ] 运行 `npm run init:agent-backend-readiness-env`，并在自动加载的 `.agent-backend-readiness.local.env` 中配置可用 OpenAI-compatible endpoint：`AGENT_SERVER_ADAPTER_LLM_BASE_URL`、`AGENT_SERVER_ADAPTER_LLM_API_KEY`、`AGENT_SERVER_ADAPTER_LLM_MODEL`；配置后运行 `npm run check:agent-backend-adapters:ready:llm-backends`。
 - [ ] 配置 Gemini/Google auth input 后跑 Gemini live readiness。可用任一项：`GEMINI_API_KEY`、`GOOGLE_API_KEY`、`GOOGLE_APPLICATION_CREDENTIALS`、`~/.gemini/oauth_creds.json`；配置后运行 `npm run check:agent-backend-adapters:ready:gemini`。
 - [ ] 补齐上述真实 runtime/凭据后运行 `npm run check:agent-backend-adapters:ready`，要求 Codex、Claude Code、Gemini、自研 agent 全部 `PASSED`。
 

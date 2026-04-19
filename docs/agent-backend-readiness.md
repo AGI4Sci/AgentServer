@@ -23,6 +23,7 @@ npm run check:agent-backend-adapters:ready
 推荐把真实 endpoint 和 auth input 放进本地未提交文件，例如 `.agent-backend-readiness.local.env`：
 
 ```bash
+npm run init:agent-backend-readiness-env
 npm run check:agent-backend-adapters:ready
 ```
 
@@ -30,10 +31,12 @@ readiness gate 会自动加载当前目录下的 `.agent-backend-readiness.local
 
 ```bash
 AGENT_SERVER_ADAPTER_READINESS_ENV_FILE=/absolute/path/to/readiness.local.env \
+npm run init:agent-backend-readiness-env
+AGENT_SERVER_ADAPTER_READINESS_ENV_FILE=/absolute/path/to/readiness.local.env \
 npm run check:agent-backend-adapters:ready
 ```
 
-env 文件只支持简单的 `KEY=value` / `export KEY=value` 行。脚本会先加载 env 文件，再计算 backend 子集；已有 shell 环境变量优先，不会被 env 文件覆盖。日志只输出文件路径和加载数量，不输出密钥值。
+初始化脚本不会覆盖已存在文件。env 文件只支持简单的 `KEY=value` / `export KEY=value` 行。脚本会先加载 env 文件，再计算 backend 子集；已有 shell 环境变量优先，不会被 env 文件覆盖。日志只输出文件路径和加载数量，不输出密钥值。
 
 ## Backend Subsets
 

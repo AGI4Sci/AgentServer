@@ -43,6 +43,7 @@
     "check:agent-backend-adapters:strict": "AGENT_SERVER_ADAPTER_PREFLIGHT_STRICT=1 node --import tsx scripts/check-agent-backend-adapters.ts",
     "check:deployment": "node --import tsx scripts/check-deployment.ts",
     "client-worker": "node --import tsx scripts/client-worker.ts",
+    "init:agent-backend-readiness-env": "node --import tsx scripts/init-agent-backend-readiness-env.ts",
     "prepare:gemini-sdk-dev": "node --import tsx scripts/prepare-gemini-sdk-dev.ts",
     "prune:backend-artifacts": "node --import tsx scripts/prune-backend-build-artifacts.ts",
     "start": "node dist/server/index.js",

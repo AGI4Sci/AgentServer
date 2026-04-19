@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -69,6 +69,33 @@ test('readiness env file loads local settings without printing secret values', a
     assert.match(result.stdout, /PLAN gemini strict preflight/);
     assert.doesNotMatch(result.stdout, /super-secret-test-key/);
     assert.doesNotMatch(result.stdout, /env-file-model/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('readiness env initializer creates a local env file without overwriting it', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'agent-readiness-init-'));
+  const envPath = join(dir, 'readiness.local.env');
+  try {
+    const created = await execFileAsync('node', ['--import', 'tsx', 'scripts/init-agent-backend-readiness-env.ts'], {
+      env: {
+        ...process.env,
+        AGENT_SERVER_ADAPTER_READINESS_ENV_FILE: envPath,
+      },
+    });
+    assert.match(created.stdout, /created local env file/);
+    assert.match(await readFile(envPath, 'utf8'), /AGENT_SERVER_ADAPTER_LLM_BASE_URL=/);
+
+    await writeFile(envPath, 'GEMINI_API_KEY=keep-me\n', 'utf8');
+    const skipped = await execFileAsync('node', ['--import', 'tsx', 'scripts/init-agent-backend-readiness-env.ts'], {
+      env: {
+        ...process.env,
+        AGENT_SERVER_ADAPTER_READINESS_ENV_FILE: envPath,
+      },
+    });
+    assert.match(skipped.stdout, /already exists/);
+    assert.equal(await readFile(envPath, 'utf8'), 'GEMINI_API_KEY=keep-me\n');
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
