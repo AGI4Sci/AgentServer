@@ -1,5 +1,5 @@
 import { spawn } from 'child_process';
-import { existsSync } from 'fs';
+import { existsSync, statSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import {
@@ -11,6 +11,7 @@ import {
 } from './team-worker-types.js';
 import type { SessionOutput, SessionStreamEvent } from './session-types.js';
 import type {
+  SupervisorCodexUpstreamRegisterRequest,
   SupervisorDiagnosticsResponse,
   SupervisorHealthResponse,
   SupervisorJsonResponse,
@@ -47,7 +48,9 @@ async function fetchNullableJson<T>(path: string, init?: RequestInit): Promise<T
 async function isSupervisorHealthy(): Promise<boolean> {
   try {
     const health = await fetchJson<SupervisorHealthResponse>('/health');
-    return health.ok === true && (!health.projectRoot || resolve(health.projectRoot) === resolve(PROJECT_ROOT));
+    return health.ok === true
+      && (!health.projectRoot || resolve(health.projectRoot) === resolve(PROJECT_ROOT))
+      && health.sourceVersion === supervisorSourceVersion();
   } catch {
     return false;
   }
@@ -74,9 +77,34 @@ function spawnSupervisorProcess(): void {
     cwd: PROJECT_ROOT,
     detached: true,
     stdio: 'ignore',
-    env: process.env,
+    env: {
+      ...process.env,
+      AGENT_SERVER_SUPERVISOR_SOURCE_VERSION: supervisorSourceVersion(),
+    },
   });
   child.unref();
+}
+
+function supervisorSourceVersion(): string {
+  const candidates = CURRENT_DIR.includes('/dist/')
+    ? [
+        join(PROJECT_ROOT, 'dist', 'server', 'runtime-supervisor', 'index.js'),
+        join(PROJECT_ROOT, 'dist', 'server', 'runtime-supervisor', 'codex-chat-responses-adapter.js'),
+      ]
+    : [
+        join(PROJECT_ROOT, 'server', 'runtime-supervisor', 'index.ts'),
+        join(PROJECT_ROOT, 'server', 'runtime-supervisor', 'codex-chat-responses-adapter.ts'),
+      ];
+  return candidates
+    .map((path) => {
+      try {
+        const stat = statSync(path);
+        return `${path}:${Math.trunc(stat.mtimeMs)}`;
+      } catch {
+        return `${path}:missing`;
+      }
+    })
+    .join('|');
 }
 
 async function waitForSupervisorShutdown(timeoutMs = 10_000): Promise<void> {
@@ -97,6 +125,7 @@ export async function ensureRuntimeSupervisor(): Promise<void> {
 
   if (!ensurePromise) {
     ensurePromise = (async () => {
+      await terminateStaleSupervisorIfPresent();
       spawnSupervisorProcess();
       const deadline = Date.now() + 15_000;
       while (Date.now() < deadline) {
@@ -112,6 +141,30 @@ export async function ensureRuntimeSupervisor(): Promise<void> {
   }
 
   await ensurePromise;
+}
+
+async function terminateStaleSupervisorIfPresent(): Promise<void> {
+  const health = await tryFetchJson<SupervisorHealthResponse>('/health');
+  if (!health?.pid) return;
+  if (health.projectRoot && resolve(health.projectRoot) !== resolve(PROJECT_ROOT)) return;
+  if (health.sourceVersion === supervisorSourceVersion()) return;
+  try {
+    process.kill(health.pid, 'SIGTERM');
+    await waitForSupervisorProcessGone(health.pid);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code !== 'ESRCH') throw error;
+  }
+}
+
+async function waitForSupervisorProcessGone(pid: number, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const health = await tryFetchJson<SupervisorHealthResponse>('/health');
+    if (!health?.pid || health.pid !== pid) return;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error(`Stale runtime supervisor ${pid} failed to stop within ${timeoutMs}ms`);
 }
 
 export async function restartRuntimeSupervisor(): Promise<SupervisorHealthResponse> {
@@ -147,6 +200,17 @@ export async function getRuntimeSupervisorDiagnostics(
     await ensureRuntimeSupervisor();
   }
   return await tryFetchJson<SupervisorDiagnosticsResponse>('/diagnostics');
+}
+
+export async function registerRuntimeSupervisorCodexUpstream(
+  upstream: SupervisorCodexUpstreamRegisterRequest,
+): Promise<void> {
+  await ensureRuntimeSupervisor();
+  await fetchJson<{ registered: true }>('/codex/upstreams/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(upstream),
+  });
 }
 
 export async function ensureSupervisorSession(

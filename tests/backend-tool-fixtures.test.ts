@@ -52,3 +52,20 @@ for (const backend of BACKEND_IDS) {
     );
   });
 }
+
+test('all backend normalizers pass through common text delta shapes', () => {
+  const samples: Record<BackendType, unknown[]> = {
+    codex: [{ type: 'response.output_text.delta', delta: 'codex delta' }],
+    'claude-code': [{ type: 'content_block_delta', delta: 'claude delta' }],
+    openclaw: [{ event: 'assistant.delta', delta: 'openclaw delta' }],
+    'hermes-agent': [{ type: 'assistant_delta', content: 'hermes delta' }],
+    openteam_agent: [{ type: 'text_delta', choices: [{ delta: { content: 'openteam delta' } }] }],
+  };
+
+  for (const backend of BACKEND_IDS) {
+    const normalized = normalizeNativeEvents(backend as BackendType, samples[backend as BackendType]);
+    assert.equal(normalized.length, 1, backend);
+    assert.equal(normalized[0].type, 'text-delta', backend);
+    assert.match(normalized[0].text, /delta/, backend);
+  }
+});

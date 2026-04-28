@@ -77,6 +77,11 @@ export class GeminiSdkAgentBackendAdapter implements AgentBackendAdapter {
   }
 
   async startSession(input: StartBackendSessionInput): Promise<BackendSessionRef> {
+    const stableSessionRefId = `gemini-sdk:${input.agentServerSessionId}`;
+    const existing = this.sessions.get(stableSessionRefId);
+    if (existing && !existing.disposed) {
+      return existing.sessionRef;
+    }
     applyGeminiAuthEnvAliases();
     const { GeminiCliAgent } = await importGeminiSdk(this.options.sdkModule);
     const modelRuntime = resolveModelRuntimeConnection({
@@ -94,7 +99,7 @@ export class GeminiSdkAgentBackendAdapter implements AgentBackendAdapter {
     const session = agent.session();
     const sessionId = session.id || input.agentServerSessionId;
     const sessionRef: BackendSessionRef = {
-      id: `gemini-sdk:${sessionId}`,
+      id: stableSessionRefId,
       backend: this.backendId,
       scope: input.scope,
       resumable: true,

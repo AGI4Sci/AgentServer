@@ -15,6 +15,7 @@ export interface SupervisorHealthResponse {
   pid: number;
   startedAt: string;
   projectRoot: string;
+  sourceVersion?: string;
 }
 
 export interface SupervisorEnsureSessionRequest {
@@ -32,6 +33,13 @@ export interface SupervisorShutdownSessionsRequest {
   teamId: string;
   projectScope?: string;
   reason?: string;
+}
+
+export interface SupervisorCodexUpstreamRegisterRequest {
+  model?: string | null;
+  modelName?: string | null;
+  baseUrl?: string | null;
+  apiKey?: string | null;
 }
 
 export interface SupervisorListSessionsRequest {
@@ -58,6 +66,7 @@ export interface SupervisorDiagnosticsResponse {
   pid: number;
   startedAt: string;
   projectRoot: string;
+  sourceVersion?: string;
   contracts: BackendModelContract[];
   sessions: WorkerSessionStatus[];
   snapshot: RuntimeSessionSnapshotFile;

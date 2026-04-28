@@ -75,9 +75,12 @@ export function resolveCodexRuntimeModelSelection(params: {
   connection: ModelRuntimeConnection;
   explicitCodexModel?: string | null;
 }): CodexRuntimeModelSelection {
-  const explicitCodexModel = trim(params.explicitCodexModel);
   const inputModelName = trim(params.input?.modelName);
   const inputRuntimeModelName = resolveRuntimeModelName(params.input?.model);
+  const hasRequestRuntime = params.connection.source === 'request'
+    || Boolean(inputModelName)
+    || Boolean(inputRuntimeModelName);
+  const explicitCodexModel = hasRequestRuntime ? null : trim(params.explicitCodexModel);
 
   if (explicitCodexModel) {
     return {

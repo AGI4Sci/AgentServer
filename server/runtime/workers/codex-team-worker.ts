@@ -9,7 +9,7 @@ import {
   resolveConfiguredRuntimeModelProvider,
 } from '../model-spec.js';
 import { resolveCodexRuntimeModelSelection } from '../codex-model-runtime.js';
-import { ensureRuntimeSupervisor } from '../supervisor-client.js';
+import { registerRuntimeSupervisorCodexUpstream } from '../supervisor-client.js';
 import { resolveHealthyRuntimeBackendConnection } from './runtime-backend-config.js';
 import type { SessionOutput } from '../session-types.js';
 import { formatRuntimeError } from '../session-types.js';
@@ -554,7 +554,12 @@ export class CodexTeamWorker {
     const model = modelSelection.model;
     const runtimeModelProvider = modelSelection.modelProvider || runtimeConnection.provider || request.options.modelProvider || null;
     if (modelSelection.route === 'custom-provider') {
-      await ensureRuntimeSupervisor();
+      await registerRuntimeSupervisorCodexUpstream({
+        model,
+        modelName: model,
+        baseUrl: runtimeConnection.baseUrl,
+        apiKey: runtimeConnection.apiKey,
+      });
     }
     const useDirectChatCompletions = this.shouldUseDirectChatCompletions(request, baseUrl);
     const requiresRealTools = requestClearlyDemandsRealTools(request);
@@ -1461,7 +1466,12 @@ export class CodexTeamWorker {
     const model = modelSelection.model;
     const runtimeModelProvider = modelSelection.modelProvider || runtimeConnection.provider || options.modelProvider || null;
     if (modelSelection.route === 'custom-provider') {
-      await ensureRuntimeSupervisor();
+      await registerRuntimeSupervisorCodexUpstream({
+        model,
+        modelName: model,
+        baseUrl: runtimeConnection.baseUrl,
+        apiKey: runtimeConnection.apiKey,
+      });
     }
     const workingDirectory = options.cwd || process.cwd();
     const { stateDir } = ensureBackendStateDirs('codex', ['home', 'tmp', 'sqlite', 'config', 'cache']);

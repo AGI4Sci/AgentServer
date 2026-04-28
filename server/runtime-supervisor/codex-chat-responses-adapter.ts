@@ -17,6 +17,12 @@ type PreparedChatRequest = {
   messages: JsonRecord[];
 };
 
+type UpstreamConnection = {
+  baseUrl: string;
+  apiKey: string;
+  modelName: string;
+};
+
 type SyntheticResponse = {
   responseId: string;
   events: Array<{ event: string; data: JsonRecord }>;
@@ -25,6 +31,7 @@ type SyntheticResponse = {
 
 const DEFAULT_SUPERVISOR_PORT = loadOpenTeamConfig().runtime.supervisor.port;
 const conversationStore = new Map<string, StoredConversation>();
+const upstreamByModel = new Map<string, UpstreamConnection>();
 const MAX_STORED_CONVERSATIONS = Math.max(
   32,
   loadOpenTeamConfig().runtime.codex.responseStoreLimit,
@@ -41,6 +48,42 @@ function resolveUpstreamApiKey(): string {
 
 function resolveDefaultModel(): string {
   return loadOpenTeamConfig().llm.model;
+}
+
+export function registerCodexResponsesBridgeUpstream(input: {
+  model?: string | null;
+  modelName?: string | null;
+  baseUrl?: string | null;
+  apiKey?: string | null;
+}): void {
+  const modelName = input.modelName?.trim();
+  const model = input.model?.trim();
+  const baseUrl = input.baseUrl?.trim().replace(/\/$/, '');
+  if (!modelName || !baseUrl) {
+    return;
+  }
+  const connection: UpstreamConnection = {
+    modelName,
+    baseUrl,
+    apiKey: input.apiKey?.trim() || '',
+  };
+  upstreamByModel.set(modelName, connection);
+  if (model) {
+    upstreamByModel.set(model, connection);
+  }
+}
+
+export function resolveCodexResponsesBridgeUpstreamForModel(model: string | null | undefined): UpstreamConnection {
+  const requestedModel = model?.trim();
+  const registered = requestedModel ? upstreamByModel.get(requestedModel) : undefined;
+  if (registered) {
+    return registered;
+  }
+  return {
+    baseUrl: resolveUpstreamBaseUrl() || '',
+    apiKey: resolveUpstreamApiKey(),
+    modelName: requestedModel || resolveDefaultModel(),
+  };
 }
 
 function resolveChatCompletionsUrl(baseUrl: string): string {
@@ -258,7 +301,7 @@ export function buildChatCompletionsRequest(
       ? requestBody.model.trim()
       : resolveDefaultModel(),
     messages,
-    stream: false,
+    stream: true,
   };
 
   const tools = translateResponsesTools(requestBody.tools);
@@ -469,6 +512,230 @@ function writeSse(res: ServerResponse, event: string, data: JsonRecord): void {
   res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
+function responseCreatedEvent(responseId: string, model: unknown): { event: string; data: JsonRecord } {
+  return {
+    event: 'response.created',
+    data: {
+      type: 'response.created',
+      response: {
+        id: responseId,
+        model,
+        status: 'in_progress',
+      },
+    },
+  };
+}
+
+function responseCompletedEvent(responseId: string, model: unknown, usage?: JsonRecord): { event: string; data: JsonRecord } {
+  return {
+    event: 'response.completed',
+    data: {
+      type: 'response.completed',
+      response: {
+        id: responseId,
+        model,
+        status: 'completed',
+        usage,
+      },
+    },
+  };
+}
+
+function messageItemAddedEvent(messageItemId: string): { event: string; data: JsonRecord } {
+  return {
+    event: 'response.output_item.added',
+    data: {
+      type: 'response.output_item.added',
+      item: {
+        id: messageItemId,
+        type: 'message',
+        role: 'assistant',
+        content: [],
+      },
+    },
+  };
+}
+
+function messageItemDoneEvent(messageItemId: string): { event: string; data: JsonRecord } {
+  return {
+    event: 'response.output_item.done',
+    data: {
+      type: 'response.output_item.done',
+      item: {
+        id: messageItemId,
+        type: 'message',
+        role: 'assistant',
+        content: [],
+      },
+    },
+  };
+}
+
+function textDeltaEvent(delta: string): { event: string; data: JsonRecord } {
+  return {
+    event: 'response.output_text.delta',
+    data: {
+      type: 'response.output_text.delta',
+      delta,
+    },
+  };
+}
+
+function toolCallDoneEvent(toolCall: JsonRecord): { event: string; data: JsonRecord } {
+  const fn = toolCall.function && typeof toolCall.function === 'object' ? toolCall.function as JsonRecord : {};
+  return {
+    event: 'response.output_item.done',
+    data: {
+      type: 'response.output_item.done',
+      item: {
+        id: `fc_${randomUUID()}`,
+        type: 'function_call',
+        name: typeof fn.name === 'string' ? fn.name : 'tool',
+        arguments: typeof fn.arguments === 'string' ? fn.arguments : JSON.stringify(fn.arguments || {}),
+        call_id: typeof toolCall.id === 'string' ? toolCall.id : `call_${randomUUID()}`,
+      },
+    },
+  };
+}
+
+async function handleStreamingChatCompletionResponse(
+  res: ServerResponse,
+  requestBody: JsonRecord,
+  prepared: PreparedChatRequest,
+  upstreamResponse: Response,
+): Promise<void> {
+  const responseId = `resp_${randomUUID()}`;
+  const messageItemId = `msg_${randomUUID()}`;
+  const model = upstreamResponse.headers.get('openai-model') || prepared.chatRequest.model;
+  const assistantParts: string[] = [];
+  const toolCallsByIndex = new Map<number, JsonRecord>();
+  let messageStarted = false;
+  let responseModel: unknown = model;
+  let usage: JsonRecord | undefined;
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-store',
+    Connection: 'keep-alive',
+    'openai-model': String(model || prepared.chatRequest.model || ''),
+  });
+  writeSse(res, responseCreatedEvent(responseId, model).event, responseCreatedEvent(responseId, model).data);
+
+  const emitText = (delta: string): void => {
+    if (!delta) return;
+    if (!messageStarted) {
+      writeSse(res, messageItemAddedEvent(messageItemId).event, messageItemAddedEvent(messageItemId).data);
+      messageStarted = true;
+    }
+    assistantParts.push(delta);
+    const event = textDeltaEvent(delta);
+    writeSse(res, event.event, event.data);
+  };
+
+  const applyToolDelta = (deltaToolCalls: unknown): void => {
+    if (!Array.isArray(deltaToolCalls)) return;
+    for (const part of deltaToolCalls) {
+      if (!part || typeof part !== 'object') continue;
+      const record = part as JsonRecord;
+      const index = typeof record.index === 'number' ? record.index : toolCallsByIndex.size;
+      const current = toolCallsByIndex.get(index) || {
+        id: typeof record.id === 'string' ? record.id : `call_${randomUUID()}`,
+        type: 'function',
+        function: { name: '', arguments: '' },
+      };
+      if (typeof record.id === 'string') current.id = record.id;
+      const fn = record.function && typeof record.function === 'object' ? record.function as JsonRecord : {};
+      const currentFn = current.function && typeof current.function === 'object' ? current.function as JsonRecord : {};
+      if (typeof fn.name === 'string') currentFn.name = `${currentFn.name || ''}${fn.name}`;
+      if (typeof fn.arguments === 'string') currentFn.arguments = `${currentFn.arguments || ''}${fn.arguments}`;
+      current.function = currentFn;
+      toolCallsByIndex.set(index, current);
+    }
+  };
+
+  const reader = upstreamResponse.body?.getReader();
+  if (!reader) {
+    throw new Error('Upstream chat.completions stream did not include a readable body.');
+  }
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  const consumeData = (data: string): void => {
+    const trimmed = data.trim();
+    if (!trimmed || trimmed === '[DONE]') return;
+    let chunk: JsonRecord;
+    try {
+      chunk = JSON.parse(trimmed) as JsonRecord;
+    } catch (error) {
+      logAdapterEvent('stream_invalid_json', {
+        error: error instanceof Error ? error.message : String(error),
+        bodyPreview: trimmed.slice(0, 1000),
+        model: prepared.chatRequest.model,
+      });
+      return;
+    }
+    if (typeof chunk.model === 'string') responseModel = chunk.model;
+    if (chunk.usage && typeof chunk.usage === 'object') usage = buildResponseUsage(chunk.usage as JsonRecord);
+    const choice = Array.isArray(chunk.choices) ? chunk.choices[0] as JsonRecord | undefined : undefined;
+    const delta = choice?.delta && typeof choice.delta === 'object' ? choice.delta as JsonRecord : {};
+    if (typeof delta.content === 'string') emitText(delta.content);
+    applyToolDelta(delta.tool_calls);
+    const message = choice?.message && typeof choice.message === 'object' ? choice.message as JsonRecord : {};
+    emitText(extractAssistantText(message.content));
+    applyToolDelta(message.tool_calls);
+  };
+
+  for (;;) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+    while (buffer.includes('\n\n')) {
+      const index = buffer.indexOf('\n\n');
+      const frame = buffer.slice(0, index);
+      buffer = buffer.slice(index + 2);
+      const data = frame.split(/\r?\n/)
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice(5).trimStart())
+        .join('\n');
+      consumeData(data);
+    }
+    if (done) break;
+  }
+  if (buffer.trim()) {
+    const data = buffer.split(/\r?\n/)
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).trimStart())
+      .join('\n');
+    consumeData(data);
+  }
+
+  if (messageStarted) {
+    const event = messageItemDoneEvent(messageItemId);
+    writeSse(res, event.event, event.data);
+  }
+  for (const toolCall of toolCallsByIndex.values()) {
+    const event = toolCallDoneEvent(toolCall);
+    writeSse(res, event.event, event.data);
+  }
+  const completed = responseCompletedEvent(responseId, responseModel, usage);
+  writeSse(res, completed.event, completed.data);
+
+  const assistantHistoryMessage: JsonRecord = {
+    role: 'assistant',
+    content: assistantParts.join(''),
+  };
+  const toolCalls = Array.from(toolCallsByIndex.values());
+  if (toolCalls.length > 0) assistantHistoryMessage.tool_calls = toolCalls;
+  conversationStore.set(responseId, {
+    id: responseId,
+    createdAt: Date.now(),
+    messages: [
+      ...cloneMessages(prepared.messages),
+      assistantHistoryMessage,
+    ],
+  });
+  pruneConversationStore();
+}
+
 export async function handleCodexChatResponsesAdapter(
   req: IncomingMessage,
   res: ServerResponse,
@@ -484,13 +751,6 @@ export async function handleCodexChatResponsesAdapter(
   if (method !== 'POST') {
     res.writeHead(405, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: { message: `Method not allowed: ${method}` } }));
-    return true;
-  }
-
-  const upstreamBaseUrl = resolveUpstreamBaseUrl();
-  if (!upstreamBaseUrl) {
-    res.writeHead(500, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: { message: 'LLM base URL is not configured.' } }));
     return true;
   }
 
@@ -511,8 +771,18 @@ export async function handleCodexChatResponsesAdapter(
     : null;
   const previousConversation = previousId ? conversationStore.get(previousId) || null : null;
   const prepared = buildChatCompletionsRequest(requestBody, previousConversation);
+  const upstream = resolveCodexResponsesBridgeUpstreamForModel(
+    typeof prepared.chatRequest.model === 'string' ? prepared.chatRequest.model : null,
+  );
+  if (!upstream.baseUrl) {
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: { message: 'LLM base URL is not configured.' } }));
+    return true;
+  }
+  prepared.chatRequest.model = upstream.modelName || prepared.chatRequest.model;
   logAdapterEvent('request_received', {
     model: prepared.chatRequest.model,
+    upstreamBaseUrl: upstream.baseUrl,
     previousResponseId: previousId,
     toolCount: Array.isArray(prepared.chatRequest.tools) ? prepared.chatRequest.tools.length : 0,
     toolNames: Array.isArray(prepared.chatRequest.tools)
@@ -533,11 +803,11 @@ export async function handleCodexChatResponsesAdapter(
 
   let upstreamResponse: Response;
   try {
-    upstreamResponse = await fetch(resolveChatCompletionsUrl(upstreamBaseUrl), {
+    upstreamResponse = await fetch(resolveChatCompletionsUrl(upstream.baseUrl), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${resolveUpstreamApiKey()}`,
+        Authorization: `Bearer ${upstream.apiKey}`,
       },
       body: JSON.stringify(prepared.chatRequest),
     });
@@ -550,6 +820,23 @@ export async function handleCodexChatResponsesAdapter(
     });
     res.writeHead(502, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: { message: `Upstream chat.completions request failed: ${error instanceof Error ? error.message : String(error)}` } }));
+    return true;
+  }
+
+  const upstreamContentType = upstreamResponse.headers.get('content-type') || '';
+  if (upstreamResponse.ok && upstreamResponse.body && upstreamContentType.includes('text/event-stream')) {
+    try {
+      await handleStreamingChatCompletionResponse(res, requestBody, prepared, upstreamResponse);
+    } catch (error) {
+      logAdapterEvent('stream_bridge_failed', {
+        error: error instanceof Error ? error.message : String(error),
+        model: prepared.chatRequest.model,
+      });
+      if (!res.headersSent) {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+      }
+      res.end();
+    }
     return true;
   }
 

@@ -55,11 +55,49 @@ function messageFrom(value: unknown, fallback: string): string {
   return fallback;
 }
 
+function textDeltaFrom(payload: Record<string, unknown>): string | undefined {
+  for (const key of ['text', 'delta', 'content', 'output_text']) {
+    const value = payload[key];
+    if (typeof value === 'string' && value) return value;
+  }
+  const data = payload.data;
+  if (data && typeof data === 'object') {
+    const nested = data as Record<string, unknown>;
+    for (const key of ['text', 'delta', 'content', 'output_text']) {
+      const value = nested[key];
+      if (typeof value === 'string' && value) return value;
+    }
+  }
+  const choices = payload.choices;
+  if (Array.isArray(choices)) {
+    const choice = choices[0] as Record<string, unknown> | undefined;
+    const delta = choice?.delta;
+    if (delta && typeof delta === 'object') {
+      const content = (delta as Record<string, unknown>).content;
+      if (typeof content === 'string' && content) return content;
+    }
+  }
+  return undefined;
+}
+
+function isTextDeltaType(value: unknown): boolean {
+  return value === 'text-delta'
+    || value === 'text_delta'
+    || value === 'assistant.delta'
+    || value === 'assistant_delta'
+    || value === 'message_delta'
+    || value === 'content_block_delta'
+    || value === 'response.output_text.delta'
+    || value === 'response.delta'
+    || value === 'text';
+}
+
 export function normalizeCodexNativeEvent(raw: unknown): SessionStreamEvent[] {
   const event = raw as Record<string, unknown>;
   const type = typeof event.type === 'string' ? event.type : '';
-  if (type === 'response.output_text.delta' && typeof event.delta === 'string') {
-    return [normalizeSessionStreamEvent({ type: 'text-delta', text: event.delta, raw })];
+  if (isTextDeltaType(type)) {
+    const text = textDeltaFrom(event);
+    if (text) return [normalizeSessionStreamEvent({ type: 'text-delta', text, raw })];
   }
   if (type === 'response.tool_call' && typeof event.name === 'string') {
     return [normalizeSessionStreamEvent({
@@ -92,8 +130,9 @@ export function normalizeCodexNativeEvent(raw: unknown): SessionStreamEvent[] {
 
 export function normalizeClaudeCodeNativeEvent(raw: unknown): SessionStreamEvent[] {
   const payload = raw as Record<string, unknown>;
-  if (payload.type === 'text-delta' && typeof payload.text === 'string') {
-    return [normalizeSessionStreamEvent({ type: 'text-delta', text: payload.text, raw })];
+  if (isTextDeltaType(payload.type) || isTextDeltaType(payload.event)) {
+    const text = textDeltaFrom(payload);
+    if (text) return [normalizeSessionStreamEvent({ type: 'text-delta', text, raw })];
   }
   if (payload.type === 'tool-call' && typeof payload.toolName === 'string') {
     return [normalizeSessionStreamEvent({
@@ -156,8 +195,9 @@ export function normalizeClaudeCodeNativeEvent(raw: unknown): SessionStreamEvent
 
 export function normalizeOpenClawNativeEvent(raw: unknown): SessionStreamEvent[] {
   const payload = raw as Record<string, unknown>;
-  if ((payload.event === 'assistant.delta' || payload.type === 'text') && typeof payload.text === 'string') {
-    return [normalizeSessionStreamEvent({ type: 'text-delta', text: payload.text, raw })];
+  if (isTextDeltaType(payload.event) || isTextDeltaType(payload.type)) {
+    const text = textDeltaFrom(payload);
+    if (text) return [normalizeSessionStreamEvent({ type: 'text-delta', text, raw })];
   }
   if ((payload.event === 'tool.call' || payload.type === 'tool-call') && typeof payload.toolName === 'string') {
     return [normalizeSessionStreamEvent({
@@ -191,8 +231,9 @@ export function normalizeOpenClawNativeEvent(raw: unknown): SessionStreamEvent[]
 export function normalizeHermesAgentNativeEvent(raw: unknown): SessionStreamEvent[] {
   const payload = raw as Record<string, unknown>;
   const type = typeof payload.type === 'string' ? payload.type : '';
-  if ((type === 'text_delta' || type === 'text-delta' || type === 'assistant.delta') && typeof payload.text === 'string') {
-    return [normalizeSessionStreamEvent({ type: 'text-delta', text: payload.text, raw })];
+  if (isTextDeltaType(type) || isTextDeltaType(payload.event)) {
+    const text = textDeltaFrom(payload);
+    if (text) return [normalizeSessionStreamEvent({ type: 'text-delta', text, raw })];
   }
   if ((type === 'tool_start' || type === 'tool-call') && typeof payload.toolName === 'string') {
     return [normalizeSessionStreamEvent({

@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
-import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'fs/promises';
-import { existsSync } from 'fs';
+import { appendFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'fs/promises';
+import { createReadStream, existsSync } from 'fs';
 import { dirname, join } from 'path';
 import type {
   AgentClarificationRecord,
@@ -41,6 +41,9 @@ import {
   getSessionWorkLogPath,
 } from './paths.js';
 
+const JSONL_PARSE_LINE_LIMIT = Number(process.env.AGENT_SERVER_JSONL_PARSE_LINE_LIMIT || 2_000_000);
+const TURN_LOG_CONTENT_LIMIT = Number(process.env.AGENT_SERVER_TURN_LOG_CONTENT_LIMIT || 120_000);
+
 async function ensureDir(dirPath: string): Promise<void> {
   await mkdir(dirPath, { recursive: true });
 }
@@ -66,21 +69,167 @@ async function readJsonFile<T>(path: string): Promise<T | null> {
 
 async function appendJsonLine(path: string, value: unknown): Promise<void> {
   await ensureDir(dirname(path));
-  const existing = existsSync(path) ? await readFile(path, 'utf8') : '';
-  const next = `${existing}${JSON.stringify(value)}\n`;
-  await writeFile(path, next, 'utf8');
+  await appendFile(path, `${JSON.stringify(value)}\n`, 'utf8');
 }
 
 async function readJsonLinesFile<T>(path: string): Promise<T[]> {
   if (!existsSync(path)) {
     return [];
   }
-  const raw = await readFile(path, 'utf8');
-  return raw
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => JSON.parse(line) as T);
+  const out: T[] = [];
+  for await (const line of readJsonLineStrings(path)) {
+    out.push(parseJsonLine<T>(line));
+  }
+  return out;
+}
+
+async function readJsonLinesTailFile<T>(path: string, limit: number): Promise<T[]> {
+  if (!existsSync(path) || limit <= 0) {
+    return [];
+  }
+  const out: T[] = [];
+  for await (const line of readJsonLineStrings(path)) {
+    out.push(parseJsonLine<T>(line));
+    if (out.length > limit) out.shift();
+  }
+  return out;
+}
+
+async function readJsonLinesRangeFile<T extends { turnNumber?: number }>(
+  path: string,
+  startTurn?: number,
+  endTurn?: number,
+  limit?: number,
+): Promise<T[]> {
+  if (!existsSync(path)) {
+    return [];
+  }
+  const out: T[] = [];
+  const max = typeof limit === 'number' && Number.isFinite(limit) && limit > 0 ? limit : undefined;
+  for await (const line of readJsonLineStrings(path)) {
+    const entry = parseJsonLine<T>(line);
+    const number = entry.turnNumber ?? 0;
+    if (typeof startTurn === 'number' && number < startTurn) continue;
+    if (typeof endTurn === 'number' && number > endTurn) continue;
+    out.push(entry);
+    if (max && out.length >= max) break;
+  }
+  return out;
+}
+
+async function readLastJsonLineFile<T>(path: string): Promise<T | null> {
+  if (!existsSync(path)) {
+    return null;
+  }
+  let last = '';
+  for await (const line of readJsonLineStrings(path)) {
+    last = line;
+  }
+  return last ? parseJsonLine<T>(last) : null;
+}
+
+async function* readJsonLineStrings(path: string): AsyncGenerator<string> {
+  const stream = createReadStream(path, { encoding: 'utf8' });
+  let carry = '';
+  let oversizedChars = 0;
+  let oversizedHead = '';
+  try {
+    for await (const chunk of stream) {
+      let text = String(chunk);
+      for (;;) {
+        const newlineIndex = text.indexOf('\n');
+        if (newlineIndex < 0) break;
+        const part = text.slice(0, newlineIndex);
+        text = text.slice(newlineIndex + 1);
+        if (oversizedChars > 0) {
+          oversizedChars += part.length;
+          yield oversizedJsonLineString(oversizedChars, oversizedHead);
+          oversizedChars = 0;
+          oversizedHead = '';
+          carry = '';
+          continue;
+        }
+        const line = `${carry}${part}`.trim();
+        carry = '';
+        if (!line) continue;
+        if (line.length > JSONL_PARSE_LINE_LIMIT) {
+          yield oversizedJsonLineString(line.length, line.slice(0, 4000));
+        } else {
+          yield line;
+        }
+      }
+      if (!text) continue;
+      if (oversizedChars > 0) {
+        oversizedChars += text.length;
+        if (oversizedHead.length < 4000) {
+          oversizedHead += text.slice(0, 4000 - oversizedHead.length);
+        }
+        continue;
+      }
+      carry += text;
+      if (carry.length > JSONL_PARSE_LINE_LIMIT) {
+        oversizedChars = carry.length;
+        oversizedHead = carry.slice(0, 4000);
+        carry = '';
+      }
+    }
+    if (oversizedChars > 0) {
+      yield oversizedJsonLineString(oversizedChars, oversizedHead);
+    } else if (carry.trim()) {
+      yield carry.trim();
+    }
+  } finally {
+    stream.destroy();
+  }
+}
+
+function oversizedJsonLineString(length: number, head: string): string {
+  return JSON.stringify(compactOversizedTurn(length, head));
+}
+
+function parseJsonLine<T>(line: string): T {
+  if (line.length <= JSONL_PARSE_LINE_LIMIT) {
+    return JSON.parse(line) as T;
+  }
+  return compactOversizedTurn(line.length, line.slice(0, 4000)) as T;
+}
+
+function compactOversizedTurn(length: number, head: string): AgentTurnRecord {
+  const turnNumber = numberFromRegex(head, /"turnNumber"\s*:\s*(\d+)/);
+  const turnId = stringFromRegex(head, /"turnId"\s*:\s*"([^"]+)"/) ?? `oversized-turn-${turnNumber ?? 'unknown'}`;
+  const role = (stringFromRegex(head, /"role"\s*:\s*"(user|assistant|system)"/) ?? 'system') as AgentTurnRecord['role'];
+  const runId = stringFromRegex(head, /"runId"\s*:\s*"([^"]+)"/);
+  const createdAt = stringFromRegex(head, /"createdAt"\s*:\s*"([^"]+)"/) ?? nowIso();
+  return {
+    kind: 'turn',
+    turnId,
+    runId,
+    role,
+    content: `[omitted oversized AgentServer turn log line: ${length} chars; compact future turns by setting AGENT_SERVER_TURN_LOG_CONTENT_LIMIT]`,
+    createdAt,
+    turnNumber,
+    usage: undefined,
+  };
+}
+
+function compactTurnForLog(turn: AgentTurnRecord): AgentTurnRecord {
+  if (turn.content.length <= TURN_LOG_CONTENT_LIMIT) return turn;
+  return {
+    ...turn,
+    content: `${turn.content.slice(0, TURN_LOG_CONTENT_LIMIT)}\n...[truncated ${turn.content.length - TURN_LOG_CONTENT_LIMIT} chars before writing AgentServer turn log]`,
+  };
+}
+
+function numberFromRegex(value: string, pattern: RegExp): number | undefined {
+  const match = value.match(pattern);
+  if (!match) return undefined;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function stringFromRegex(value: string, pattern: RegExp): string | undefined {
+  const match = value.match(pattern);
+  return match?.[1];
 }
 
 function nowIso(): string {
@@ -348,8 +497,9 @@ export class AgentStore {
   }
 
   async appendTurn(agentId: string, sessionId: string, turn: AgentTurnRecord): Promise<void> {
-    await appendJsonLine(getSessionWorkLogPath(agentId, sessionId), turn);
-    await appendJsonLine(getSessionCurrentPath(agentId, sessionId), turn);
+    const compact = compactTurnForLog(turn);
+    await appendJsonLine(getSessionWorkLogPath(agentId, sessionId), compact);
+    await appendJsonLine(getSessionCurrentPath(agentId, sessionId), compact);
   }
 
   async listCurrentWork(agentId: string, sessionId: string): Promise<AgentWorkEntry[]> {
@@ -415,8 +565,7 @@ export class AgentStore {
   }
 
   async listRecentTurns(agentId: string, sessionId: string, limit = 12): Promise<AgentTurnRecord[]> {
-    const turns = await this.listTurns(agentId, sessionId);
-    return turns.slice(-limit);
+    return await readJsonLinesTailFile<AgentTurnRecord>(getSessionWorkLogPath(agentId, sessionId), limit);
   }
 
   async listTurnsRange(
@@ -426,21 +575,17 @@ export class AgentStore {
     endTurn?: number,
     limit?: number,
   ): Promise<AgentTurnRecord[]> {
-    const turns = await this.listTurns(agentId, sessionId);
-    const filtered = turns.filter((turn) => {
-      const number = turn.turnNumber ?? 0;
-      if (typeof startTurn === 'number' && number < startTurn) {
-        return false;
-      }
-      if (typeof endTurn === 'number' && number > endTurn) {
-        return false;
-      }
-      return true;
-    });
-    if (typeof limit === 'number' && Number.isFinite(limit) && limit > 0) {
-      return filtered.slice(0, limit);
-    }
-    return filtered;
+    return await readJsonLinesRangeFile<AgentTurnRecord>(
+      getSessionWorkLogPath(agentId, sessionId),
+      startTurn,
+      endTurn,
+      limit,
+    );
+  }
+
+  async getNextTurnNumber(agentId: string, sessionId: string): Promise<number> {
+    const latest = await readLastJsonLineFile<AgentTurnRecord>(getSessionWorkLogPath(agentId, sessionId));
+    return (latest?.turnNumber ?? 0) + 1;
   }
 
   async saveRun(run: AgentRunRecord): Promise<void> {

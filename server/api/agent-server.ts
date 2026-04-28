@@ -19,6 +19,8 @@ import type {
   AcknowledgeRecoveryRequest,
   ApplyPersistentBudgetRequest,
   AgentServerRunRequest,
+  AgentServerRunResult,
+  AgentRunRecord,
   AppendMemoryConstraintsRequest,
   AppendMemorySummaryRequest,
   AppendPersistentConstraintsRequest,
@@ -72,6 +74,51 @@ function sendStreamError(res: ServerResponse, err: unknown): void {
   writeStreamEnvelope(res, { error: message });
 }
 
+const HTTP_TEXT_LIMIT = 8_000;
+const HTTP_EVENTS_LIMIT = 200;
+
+function clipText(value: unknown, limit = HTTP_TEXT_LIMIT): unknown {
+  if (typeof value !== 'string' || value.length <= limit) return value;
+  return `${value.slice(0, Math.max(0, limit - 120))}\n...[truncated ${value.length - limit} chars for AgentServer HTTP response; full value remains in run store]`;
+}
+
+function compactRecordForHttp<T>(value: T): T {
+  if (typeof value === 'string') return clipText(value) as T;
+  if (Array.isArray(value)) return value.slice(-HTTP_EVENTS_LIMIT).map((item) => compactRecordForHttp(item)) as T;
+  if (!value || typeof value !== 'object') return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    if (key === 'context' || key === 'assembledContext') {
+      out[key] = clipText(item, 2_000);
+    } else if (key === 'events' && Array.isArray(item)) {
+      out[key] = item.slice(-HTTP_EVENTS_LIMIT).map((entry) => compactRecordForHttp(entry));
+      if (item.length > HTTP_EVENTS_LIMIT) out.eventCount = item.length;
+    } else if (key === 'input' && item && typeof item === 'object' && 'canonicalContext' in item) {
+      const input = item as Record<string, unknown>;
+      out[key] = {
+        ...input,
+        canonicalContext: '[omitted from AgentServer HTTP response; full value remains in run store]',
+        metadata: compactRecordForHttp(input.metadata),
+      };
+    } else if (key === 'canonicalContext') {
+      out[key] = '[omitted from AgentServer HTTP response; full value remains in run store]';
+    } else {
+      out[key] = compactRecordForHttp(item);
+    }
+  }
+  return out as T;
+}
+
+export function compactAgentServerRunResultForHttp(result: AgentServerRunResult): AgentServerRunResult {
+  return {
+    ...result,
+    agent: compactRecordForHttp(result.agent),
+    run: compactRecordForHttp(result.run) as AgentRunRecord,
+    recoveryActions: compactRecordForHttp(result.recoveryActions),
+    metadata: compactRecordForHttp(result.metadata),
+  };
+}
+
 export async function handleAgentServerRoutes(
   req: IncomingMessage,
   res: ServerResponse,
@@ -88,7 +135,7 @@ export async function handleAgentServerRoutes(
       if (result.agent.autonomy.enabled && result.agent.status === 'active') {
         loopManager.ensureLoop(result.agent.id, 250);
       }
-      sendJson(res, 200, success(result));
+      sendJson(res, 200, success(compactAgentServerRunResultForHttp(result)));
       return true;
     }
 
@@ -108,7 +155,7 @@ export async function handleAgentServerRoutes(
         if (result.agent.autonomy.enabled && result.agent.status === 'active') {
           loopManager.ensureLoop(result.agent.id, 250);
         }
-        writeStreamEnvelope(res, { result });
+        writeStreamEnvelope(res, { result: compactAgentServerRunResultForHttp(result) });
       } catch (err) {
         sendStreamError(res, err);
       } finally {

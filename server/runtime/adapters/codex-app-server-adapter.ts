@@ -21,7 +21,7 @@ import type { SessionStreamEvent, SessionUsage } from '../session-types.js';
 import { resolveCodexRuntimeModelSelection } from '../codex-model-runtime.js';
 import { normalizeModelProviderUsage } from '../model-provider-usage.js';
 import { resolveModelRuntimeConnection } from '../model-runtime-resolver.js';
-import { ensureRuntimeSupervisor } from '../supervisor-client.js';
+import { registerRuntimeSupervisorCodexUpstream } from '../supervisor-client.js';
 
 type JsonRpcId = number | string;
 
@@ -83,8 +83,19 @@ export class CodexAppServerAgentBackendAdapter implements AgentBackendAdapter {
   }
 
   async startSession(input: StartBackendSessionInput): Promise<BackendSessionRef> {
-    if (codexRuntimeSelection(this.options, input.runtimeModel).route === 'custom-provider') {
-      await ensureRuntimeSupervisor();
+    const stableSessionRefId = `codex-app-server:${input.agentServerSessionId}`;
+    const existing = this.sessions.get(stableSessionRefId);
+    if (existing && !existing.disposed) {
+      return existing.sessionRef;
+    }
+    const selection = codexRuntimeSelection(this.options, input.runtimeModel);
+    if (selection.route === 'custom-provider') {
+      await registerRuntimeSupervisorCodexUpstream({
+        model: selection.model,
+        modelName: selection.model,
+        baseUrl: selection.connection.baseUrl,
+        apiKey: selection.connection.apiKey,
+      });
     }
     const client = CodexJsonRpcClient.spawn(this.options, input.runtimeModel);
     await client.request('initialize', {
@@ -114,7 +125,7 @@ export class CodexAppServerAgentBackendAdapter implements AgentBackendAdapter {
     }
 
     const sessionRef: BackendSessionRef = {
-      id: `codex-app-server:${threadId}`,
+      id: stableSessionRefId,
       backend: this.backendId,
       scope: input.scope,
       resumable: true,
@@ -548,7 +559,7 @@ function codexRuntimeSelection(options: CodexAppServerAdapterOptions, runtimeMod
     ...(runtimeModel || {}),
     model: runtimeModel?.model || options.model || process.env.AGENT_SERVER_CODEX_MODEL?.trim(),
   });
-  return resolveCodexRuntimeModelSelection({
+  const selection = resolveCodexRuntimeModelSelection({
     connection: modelRuntime,
     input: {
       model: runtimeModel?.model || options.model || null,
@@ -556,6 +567,10 @@ function codexRuntimeSelection(options: CodexAppServerAdapterOptions, runtimeMod
     },
     explicitCodexModel: options.model || process.env.AGENT_SERVER_CODEX_MODEL,
   });
+  return {
+    ...selection,
+    connection: modelRuntime,
+  };
 }
 
 function codexTurnOverrides(options: CodexAppServerAdapterOptions, runtimeModel?: RuntimeModelInput): Record<string, string> {

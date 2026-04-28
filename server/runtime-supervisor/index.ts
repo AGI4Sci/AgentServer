@@ -17,6 +17,7 @@ import {
 } from '../runtime/supervisor-snapshot-store.js';
 import type {
   SupervisorDiagnosticsResponse,
+  SupervisorCodexUpstreamRegisterRequest,
   SupervisorDisposeSessionRequest,
   SupervisorEnsureSessionRequest,
   SupervisorJsonResponse,
@@ -27,7 +28,10 @@ import type {
 import type { WorkerRuntimeType } from '../runtime/team-worker-types.js';
 import { normalizeSessionStreamEvent } from '../runtime/runtime-event-contract.js';
 import { loadOpenTeamConfig } from '../utils/openteam-config.js';
-import { handleCodexChatResponsesAdapter } from './codex-chat-responses-adapter.js';
+import {
+  handleCodexChatResponsesAdapter,
+  registerCodexResponsesBridgeUpstream,
+} from './codex-chat-responses-adapter.js';
 
 const CURRENT_DIR = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = CURRENT_DIR.includes('/dist/')
@@ -36,6 +40,7 @@ const PROJECT_ROOT = CURRENT_DIR.includes('/dist/')
 
 const SUPERVISOR_PORT = loadOpenTeamConfig().runtime.supervisor.port;
 const SUPERVISOR_STARTED_AT = new Date().toISOString();
+const SUPERVISOR_SOURCE_VERSION = process.env.AGENT_SERVER_SUPERVISOR_SOURCE_VERSION;
 const SUPERVISOR_REQUEST_LOG_PATH = join(PROJECT_ROOT, 'tmp', 'runtime-supervisor-requests.log');
 const SNAPSHOT_FLUSH_INTERVAL_MS = Math.max(
   5_000,
@@ -129,6 +134,7 @@ function buildDiagnostics(): SupervisorDiagnosticsResponse {
     pid: process.pid,
     startedAt: SUPERVISOR_STARTED_AT,
     projectRoot: PROJECT_ROOT,
+    sourceVersion: SUPERVISOR_SOURCE_VERSION,
     contracts: listBackendModelContracts(),
     sessions,
     snapshot: loadRuntimeSessionSnapshot(),
@@ -221,6 +227,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         pid: process.pid,
         startedAt: SUPERVISOR_STARTED_AT,
         projectRoot: PROJECT_ROOT,
+        sourceVersion: SUPERVISOR_SOURCE_VERSION,
       },
     });
     return;
@@ -231,6 +238,21 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       ok: true,
       data: buildDiagnostics(),
     });
+    return;
+  }
+
+  if (url === '/codex/upstreams/register' && method === 'POST') {
+    const body = await readJsonBody<SupervisorCodexUpstreamRegisterRequest>(req);
+    if (!body.modelName && !body.model) {
+      writeJson(res, 400, { ok: false, error: 'Missing modelName or model' });
+      return;
+    }
+    if (!body.baseUrl) {
+      writeJson(res, 400, { ok: false, error: 'Missing baseUrl' });
+      return;
+    }
+    registerCodexResponsesBridgeUpstream(body);
+    writeJson(res, 200, { ok: true, data: { registered: true } });
     return;
   }
 

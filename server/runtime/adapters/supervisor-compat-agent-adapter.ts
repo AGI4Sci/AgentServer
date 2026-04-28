@@ -80,8 +80,13 @@ export class SupervisorCompatAgentBackendAdapter implements AgentBackendAdapter 
   }
 
   async startSession(input: StartBackendSessionInput): Promise<BackendSessionRef> {
+    const id = `${this.backendId}:${input.agentServerSessionId}`;
+    const existing = this.sessions.get(id);
+    if (existing && !existing.disposed) {
+      return existing.sessionRef;
+    }
     const sessionRef: BackendSessionRef = {
-      id: `${this.backendId}:${input.agentServerSessionId}`,
+      id,
       backend: this.backendId,
       scope: input.scope,
       resumable: true,

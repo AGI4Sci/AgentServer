@@ -27,6 +27,8 @@ export interface AvailableAgentBackendAdapter {
 
 type AgentBackendAdapterFactory = () => AgentBackendAdapter;
 
+const ADAPTER_SINGLETONS = new Map<AgentBackendAdapterKey, AgentBackendAdapter>();
+
 const AGENT_BACKEND_ADAPTER_FACTORIES: Partial<Record<StrategicAgentBackend, AgentBackendAdapterFactory>> = {
   codex: () => new CodexAppServerAgentBackendAdapter(),
   'claude-code': () => new ClaudeCodeBridgeAgentBackendAdapter(),
@@ -77,12 +79,16 @@ export function hasAgentBackendAdapter(key: AgentBackendAdapterKey): boolean {
 
 export function createAgentBackendAdapter(key: AgentBackendAdapterKey): AgentBackendAdapter {
   const strategicKey = normalizeAdapterKey(key);
+  const existing = ADAPTER_SINGLETONS.get(strategicKey);
+  if (existing) return existing;
   if (isEcosystemBackend(strategicKey)) {
     const factory = ECOSYSTEM_BACKEND_ADAPTER_FACTORIES[strategicKey];
     if (!factory) {
       throw new Error(`Agent backend adapter is not implemented yet: ${strategicKey}`);
     }
-    return factory();
+    const adapter = factory();
+    ADAPTER_SINGLETONS.set(strategicKey, adapter);
+    return adapter;
   }
   if (!isStrategicBackend(strategicKey)) {
     throw new Error(`Backend is not a strategic agent backend: ${strategicKey}`);
@@ -97,7 +103,9 @@ export function createAgentBackendAdapter(key: AgentBackendAdapterKey): AgentBac
       `statusTransparency=${profile.currentCapabilities.statusTransparency}`,
     ].join('; '));
   }
-  return factory();
+  const adapter = factory();
+  ADAPTER_SINGLETONS.set(strategicKey, adapter);
+  return adapter;
 }
 
 export function normalizeAdapterKey(key: AgentBackendAdapterKey): AgentBackendAdapterKey {

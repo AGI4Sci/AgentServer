@@ -131,6 +131,14 @@ const DEFAULT_AUTONOMY = {
   autoReflect: false,
   maxConsecutiveErrors: 3,
 } as const;
+const DEFAULT_RUN_TASK_CONTEXT_POLICY = {
+  includeCurrentWork: false,
+  includeRecentTurns: false,
+  includePersistent: false,
+  includeMemory: false,
+  persistRunSummary: false,
+  persistExtractedConstraints: false,
+} as const;
 const DEFAULT_AUTONOMOUS_AGENT_POLICY = {
   autoRevive: true,
   autoPersistentRecovery: true,
@@ -335,6 +343,38 @@ function renderSummaryBlock(title: string, values: string[]): string {
     return `${title}:\n- (empty)`;
   }
   return `${title}:\n${values.map((item) => `- ${item}`).join('\n')}`;
+}
+
+function isRetryableNativeSessionHistoryError(errorText: string | undefined): boolean {
+  if (!errorText) return false;
+  return /tool_use_id.*tool_result|tool_result.*corresponding.*tool_use|unexpected [`']?tool_use_id[`']?/i.test(errorText)
+    && /Bedrock|Anthropic|ValidationException|invalid_request_error|InvokeModel/i.test(errorText);
+}
+
+export function shouldRouteModelEndpointThroughSupervisor(
+  runtimeModel: Pick<AgentMessageRequest, 'model' | 'modelProvider' | 'modelName' | 'llmEndpoint'> | undefined,
+): boolean {
+  const endpoint = runtimeModel?.llmEndpoint;
+  const baseUrl = typeof endpoint?.baseUrl === 'string' ? endpoint.baseUrl.trim() : '';
+  const endpointModel = typeof endpoint?.modelName === 'string' ? endpoint.modelName.trim() : '';
+  const requestModel = typeof runtimeModel?.modelName === 'string' ? runtimeModel.modelName.trim() : '';
+  if (!baseUrl || (!endpointModel && !requestModel)) {
+    return false;
+  }
+  const provider = String(endpoint?.provider || runtimeModel?.modelProvider || '').trim().toLowerCase();
+  return provider !== 'codex-chatgpt' && provider !== 'chatgpt';
+}
+
+function renderLegacySupervisorContext(
+  executionContext: string,
+  handoffPacket: BackendHandoffPacket,
+): string {
+  return [
+    executionContext,
+    '',
+    'AgentServer handoff packet:',
+    JSON.stringify(handoffPacket, null, 2),
+  ].join('\n');
 }
 
 function outputFromAdapterStageResult(
@@ -944,7 +984,7 @@ export class AgentServerService {
         modelName: request.runtime?.modelName,
         llmEndpoint: request.runtime?.llmEndpoint,
         localDevPolicy: request.runtime?.localDevPolicy,
-        contextPolicy: request.contextPolicy,
+        contextPolicy: request.contextPolicy ?? DEFAULT_RUN_TASK_CONTEXT_POLICY,
         metadata,
       },
       policy: request.policy ?? request.agent?.policy,
@@ -2709,8 +2749,7 @@ export class AgentServerService {
     agent.runtime.lastTickAt = nowIso();
     agent.updatedAt = agent.runtime.lastTickAt;
     await this.store.saveAgent(agent);
-    const existingTurns = await this.store.listTurns(agent.id, session.id);
-    const nextTurnNumber = Math.max(session.nextTurnNumber ?? 1, this.getNextTurnNumber(existingTurns));
+    const nextTurnNumber = Math.max(session.nextTurnNumber ?? 1, await this.store.getNextTurnNumber(agent.id, session.id));
     session.nextTurnNumber = nextTurnNumber + 2;
     session.updatedAt = nowIso();
     await this.store.saveSession(session);
@@ -2797,6 +2836,13 @@ export class AgentServerService {
         console.warn('[agent-server] stream event callback failed:', error);
       }
     };
+    emitEvent({
+      type: 'run-plan',
+      runId,
+      backend: agent.backend,
+      plan: initialOrchestratorLedger.plan.map((stage) => `${stage.type}:${stage.backend}`),
+      message: `Plan: ${initialOrchestratorLedger.plan.map((stage) => `${stage.type} via ${stage.backend}`).join(' -> ') || `implement via ${agent.backend}`}`,
+    });
     let output: SessionOutput;
     let stageRecord: AgentRunStageRecord;
     let stageRecords: AgentRunStageRecord[];
@@ -2834,6 +2880,14 @@ export class AgentServerService {
       stageRecords = multiStage.stages.length > 0 ? multiStage.stages : [stageRecord];
       orchestratorLedger = multiStage.ledger;
     } else {
+      emitEvent({
+        type: 'stage-start',
+        runId,
+        stageId,
+        backend: agent.backend,
+        message: `Starting implement stage on ${agent.backend}`,
+        detail: handoffPacket.stageInstructions,
+      });
       const stageExecution = await this.runSingleStageBackendTurn({
         agent,
         session,
@@ -3195,7 +3249,7 @@ export class AgentServerService {
     nativeSessionRef?: BackendSessionRef;
     executionPath: 'agent_backend_adapter' | 'legacy_supervisor';
   }> {
-    if (hasAgentBackendAdapter(input.backend)) {
+    if (hasAgentBackendAdapter(input.backend) && !shouldRouteModelEndpointThroughSupervisor(input.runtimeModel)) {
       return await this.runSingleStageViaAgentBackendAdapter(input);
     }
     if (!isBackendEnabled(input.backend as BackendType)) {
@@ -3209,6 +3263,20 @@ export class AgentServerService {
         output,
         executionPath: 'legacy_supervisor',
       };
+    }
+    if (shouldRouteModelEndpointThroughSupervisor(input.runtimeModel)) {
+      input.emitEvent({
+        type: 'status',
+        stageId: input.handoffPacket.stageId,
+        status: 'starting',
+        message: `${input.backend} using configured OpenAI-compatible model endpoint through the shared AgentServer tool bridge.`,
+        raw: {
+          kind: 'model-endpoint-supervisor-route',
+          backend: input.backend,
+          provider: input.runtimeModel?.llmEndpoint?.provider || input.runtimeModel?.modelProvider || null,
+          modelName: input.runtimeModel?.llmEndpoint?.modelName || input.runtimeModel?.modelName || null,
+        },
+      });
     }
     return await this.runSingleStageViaLegacySupervisor(input);
   }
@@ -3240,6 +3308,8 @@ export class AgentServerService {
     };
     let lastBackendEventAt = Date.now();
     let heartbeat: NodeJS.Timeout | undefined;
+    let backendWaitNoticeCount = 0;
+    const sessionScope = input.handoffPacket.stageType === 'implement' ? 'session' as const : 'stage' as const;
     try {
       input.emitEvent({
         type: 'status',
@@ -3247,64 +3317,103 @@ export class AgentServerService {
         status: 'starting',
         message: `${input.backend} agent backend starting with native tools and highest local permissions.`,
       });
-      sessionRef = await adapter.startSession({
-        agentServerSessionId: `${input.agent.id}:${input.session.id}`,
-        backend: input.backend,
-        workspace: input.agent.workingDirectory,
-        scope: 'stage',
-        runtimeModel: input.runtimeModel,
-        localDevPolicy: input.localDevPolicy,
-        executionPolicy,
-        metadata: {
-          runId: input.handoffPacket.runId,
-          stageId: input.handoffPacket.stageId,
-          agentId: input.agent.id,
-          agentServerSessionId: input.session.id,
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        textParts.length = 0;
+        adapterStageResult = undefined;
+        output = undefined;
+        sessionRef = await adapter.startSession({
+          agentServerSessionId: `${input.agent.id}:${input.session.id}`,
+          backend: input.backend,
+          workspace: input.agent.workingDirectory,
+          scope: sessionScope,
+          runtimeModel: input.runtimeModel,
+          localDevPolicy: input.localDevPolicy,
           executionPolicy,
-        },
-      });
+          metadata: {
+            runId: input.handoffPacket.runId,
+            stageId: input.handoffPacket.stageId,
+            agentId: input.agent.id,
+            agentServerSessionId: input.session.id,
+            nativeSessionScope: sessionScope,
+            nativeSessionAttempt: attempt,
+            executionPolicy,
+          },
+        });
 
-      heartbeat = setInterval(() => {
-        if (Date.now() - lastBackendEventAt < 10_000) {
-          return;
+        if (!heartbeat) {
+          heartbeat = setInterval(() => {
+            const quietMs = Date.now() - lastBackendEventAt;
+            if (quietMs >= 10_000) {
+              backendWaitNoticeCount += 1;
+              lastBackendEventAt = Date.now();
+              input.emitEvent({
+                type: 'status',
+                stageId: input.handoffPacket.stageId,
+                status: 'running',
+                message: `${input.backend} backend still running; no native event for ${Math.round(quietMs / 1000)}s. Waiting for text-delta, tool-call, tool-result, or stage-result.`,
+                raw: {
+                  kind: 'backend-heartbeat',
+                  backend: input.backend,
+                  quietMs,
+                  noticeCount: backendWaitNoticeCount,
+                },
+              });
+            }
+          }, 10_000);
+          heartbeat.unref?.();
         }
-        lastBackendEventAt = Date.now();
+
+        for await (const event of adapter.runTurn({
+          sessionRef,
+          handoff: input.handoffPacket,
+          runtimeModel: input.runtimeModel,
+          localDevPolicy: input.localDevPolicy,
+          executionPolicy,
+        })) {
+          lastBackendEventAt = Date.now();
+          if (event.type === 'stage-result') {
+            adapterStageResult = event.result;
+            input.emitEvent(event);
+            continue;
+          }
+          if (event.type === 'text-delta') {
+            textParts.push(event.text);
+          }
+          if (event.type === 'result') {
+            output = event.output;
+          }
+          input.emitEvent(event);
+        }
+
+        if (!output) {
+          output = outputFromAdapterStageResult(adapterStageResult, textParts.join(''));
+        }
+        const retryableNativeSessionError = attempt === 1
+          && sessionRef.scope === 'session'
+          && isRetryableNativeSessionHistoryError(output.error || adapterStageResult?.handoffSummary || '');
+        if (!retryableNativeSessionError) {
+          input.emitEvent({ type: 'result', output });
+          break;
+        }
         input.emitEvent({
           type: 'status',
           stageId: input.handoffPacket.stageId,
           status: 'running',
-          message: `${input.backend} agent backend is still running through its native loop.`,
+          message: `${input.backend} native session history looked corrupt; restarting native session and retrying once.`,
+          raw: {
+            kind: 'native-session-history-retry',
+            backend: input.backend,
+            reason: 'tool_use_tool_result_pairing',
+            nativeSessionRef: sessionRef.id,
+          },
         });
-      }, 10_000);
-      heartbeat.unref?.();
-
-      for await (const event of adapter.runTurn({
-        sessionRef,
-        handoff: input.handoffPacket,
-        runtimeModel: input.runtimeModel,
-        localDevPolicy: input.localDevPolicy,
-        executionPolicy,
-      })) {
-        lastBackendEventAt = Date.now();
-        if (event.type === 'stage-result') {
-          adapterStageResult = event.result;
-          continue;
-        }
-        if (event.type === 'text-delta') {
-          textParts.push(event.text);
-        }
-        if (event.type === 'result') {
-          output = event.output;
-        }
-        input.emitEvent(event);
-      }
-
-      if (!output) {
-        output = outputFromAdapterStageResult(adapterStageResult, textParts.join(''));
-        input.emitEvent({ type: 'result', output });
+        await adapter.dispose({ sessionRef, reason: 'retry after native tool_use/tool_result pairing error' }).catch((error) => {
+          console.warn('[agent-server] adapter dispose before native-session retry failed:', error);
+        });
+        sessionRef = undefined;
       }
       return {
-        output,
+        output: output ?? { success: false, error: `${input.backend} backend produced no output.` },
         adapterStageResult,
         nativeSessionRef: adapterStageResult?.nativeSessionRef || sessionRef,
         executionPath: 'agent_backend_adapter',
@@ -3324,7 +3433,7 @@ export class AgentServerService {
       if (heartbeat) {
         clearInterval(heartbeat);
       }
-      if (sessionRef) {
+      if (sessionRef?.scope === 'stage') {
         await adapter.dispose({ sessionRef, reason: 'single stage execution finished' }).catch((error) => {
           console.warn('[agent-server] adapter dispose failed:', error);
         });
@@ -3370,6 +3479,14 @@ export class AgentServerService {
       runStage: async (handoff, stage, attempt) => {
         const stageStartedAtMs = Date.now();
         const stageEvents: SessionStreamEvent[] = [];
+        input.emitEvent({
+          type: 'stage-start',
+          runId: handoff.runId,
+          stageId: stage.stageId,
+          backend: stage.backend,
+          message: `Starting ${stage.type} stage on ${stage.backend}`,
+          detail: stage.reason,
+        });
         const stageExecution = await this.runSingleStageBackendTurn({
           agent: input.agent,
           session: input.session,
@@ -3445,7 +3562,7 @@ export class AgentServerService {
         backend,
         {
           task: input.message,
-          context: input.executionContext,
+          context: renderLegacySupervisorContext(input.executionContext, input.handoffPacket),
         },
         {
           backend,
@@ -6716,18 +6833,20 @@ export class AgentServerService {
     }
     const agentId = agent.id;
     const currentWork = await this.store.listCurrentWork(agentId, sessionId);
-    const logTurns = await this.store.listTurns(agentId, sessionId);
     const session = await this.store.getSession(agentId, sessionId);
     const recoveryIssues: AgentRecoveryIssueRecord[] = [];
     const recoveryIntent = await this.store.getRecoveryIntent(agentId, sessionId);
     if (session) {
-      const recoveredNextTurn = this.getNextTurnNumber(logTurns);
+      const recoveredNextTurn = await this.store.getNextTurnNumber(agentId, sessionId);
       if ((session.nextTurnNumber ?? 1) !== recoveredNextTurn) {
         session.nextTurnNumber = recoveredNextTurn;
         session.updatedAt = nowIso();
         await this.store.saveSession(session);
       }
     }
+    const logTurns = currentWork.length === 0
+      ? await this.store.listTurns(agentId, sessionId)
+      : [];
     if (currentWork.length === 0 && logTurns.length > 0) {
       await this.store.saveCurrentWork(agentId, sessionId, logTurns.map((turn) => ({
         ...turn,

@@ -78,6 +78,22 @@ export interface RunSessionOptions {
 
 export type SessionStreamEvent =
   | ({
+      type: 'run-plan';
+      runId: string;
+      stageId?: string;
+      backend: string;
+      plan: string[];
+      message?: string;
+    } & RuntimeEventBase)
+  | ({
+      type: 'stage-start';
+      runId: string;
+      stageId: string;
+      backend: string;
+      message?: string;
+      detail?: string;
+    } & RuntimeEventBase)
+  | ({
       type: 'text-delta';
       stageId?: string;
       text: string;

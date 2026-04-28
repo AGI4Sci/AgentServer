@@ -73,6 +73,12 @@ test('adapter registry creates only implemented structured adapters', () => {
   assert.equal(openClawAdapter.tier, 'compatibility');
 });
 
+test('adapter registry reuses adapter instances so native sessions can persist across turns', () => {
+  assert.equal(createAgentBackendAdapter('codex'), createAgentBackendAdapter('codex'));
+  assert.equal(createAgentBackendAdapter('claude-code'), createAgentBackendAdapter('claude-code'));
+  assert.equal(createAgentBackendAdapter('openteam_agent'), createAgentBackendAdapter('self-hosted-agent'));
+});
+
 test('adapter registry rejects runtime backends that are neither strategic nor ecosystem adapters', () => {
   assert.throws(
     () => normalizeAdapterKey('unknown-backend' as never),

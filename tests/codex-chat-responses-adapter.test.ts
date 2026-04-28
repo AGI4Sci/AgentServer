@@ -3,6 +3,8 @@ import test from 'node:test';
 import {
   buildChatCompletionsRequest,
   buildSyntheticResponsesFromChatCompletion,
+  registerCodexResponsesBridgeUpstream,
+  resolveCodexResponsesBridgeUpstreamForModel,
 } from '../server/runtime-supervisor/codex-chat-responses-adapter.ts';
 
 test('codex responses bridge maps developer role to system for chat completions', () => {
@@ -53,4 +55,24 @@ test('codex responses bridge emits assistant text on delta path only', () => {
   assert.equal(delta?.data.delta, 'connected');
   assert.deepEqual(done?.data.item.content, []);
   assert.equal(synthetic.storedConversation.messages.at(-1)?.content, 'connected');
+});
+
+test('codex responses bridge resolves request-registered upstream by model', () => {
+  registerCodexResponsesBridgeUpstream({
+    model: 'openrouter/qwen-test',
+    modelName: 'qwen-test',
+    baseUrl: 'https://models.example.test/v1/',
+    apiKey: 'request-key',
+  });
+
+  assert.deepEqual(resolveCodexResponsesBridgeUpstreamForModel('qwen-test'), {
+    modelName: 'qwen-test',
+    baseUrl: 'https://models.example.test/v1',
+    apiKey: 'request-key',
+  });
+  assert.deepEqual(resolveCodexResponsesBridgeUpstreamForModel('openrouter/qwen-test'), {
+    modelName: 'qwen-test',
+    baseUrl: 'https://models.example.test/v1',
+    apiKey: 'request-key',
+  });
 });
