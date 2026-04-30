@@ -10,7 +10,7 @@ import {
   normalizeBackendType,
 } from '../../core/runtime/backend-catalog.js';
 import type { AgentBackendId, BackendType } from '../../core/runtime/backend-catalog.js';
-import type { SessionOutput, SessionStreamEvent } from '../runtime/session-types.js';
+import type { SessionOutput, SessionStreamEvent, SessionUsage } from '../runtime/session-types.js';
 import { mergeModelProviderUsage } from '../runtime/model-provider-usage.js';
 import { runSessionViaSupervisor } from '../runtime/supervisor-session-runner.js';
 import {
@@ -161,6 +161,8 @@ const STRONG_SEMANTIC_BOUNDARY_SCORE = 8;
 const VERY_STRONG_SEMANTIC_BOUNDARY_SCORE = 10;
 const MICRO_DYNAMIC_COMPRESS_TURNS = 1;
 const LIVE_DYNAMIC_TAIL_TURNS = 2;
+const AGENT_BACKEND_HEARTBEAT_INTERVAL_MS = 10_000;
+const DEFAULT_AGENT_BACKEND_IDLE_TIMEOUT_MS = 10 * 60_000;
 const PERSISTENT_MAX_APPROX_TOKENS = 10_000;
 const PERSISTENT_SUMMARY_SOFT_APPROX_TOKENS = 4_000;
 const PERSISTENT_SUMMARY_HARD_APPROX_TOKENS = 6_000;
@@ -365,6 +367,72 @@ export function shouldRouteModelEndpointThroughSupervisor(
   return provider !== 'codex-chatgpt' && provider !== 'chatgpt';
 }
 
+function metadataRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function metadataString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function bioAgentPurposeFromMetadata(metadata: unknown): string {
+  const root = metadataRecord(metadata);
+  const input = metadataRecord(root.input);
+  const runtime = metadataRecord(root.runtime);
+  return metadataString(input.purpose)
+    || metadataString(root.purpose)
+    || metadataString(root.task)
+    || metadataString(runtime.purpose);
+}
+
+function requiresNativeWorkspaceCapability(handoffPacket: BackendHandoffPacket): boolean {
+  const metadata = metadataRecord(handoffPacket.metadata);
+  const runtime = metadataRecord(metadata.runtime);
+  const purpose = bioAgentPurposeFromMetadata(metadata);
+  if (runtime.requiresNativeWorkspaceCapabilities === true) return true;
+  if (runtime.requiresWorkspaceExecution === true) return true;
+  return purpose === 'workspace-task-generation'
+    || purpose === 'runtime-repair'
+    || purpose === 'artifact-continuation';
+}
+
+function sessionScopeForHandoff(handoffPacket: BackendHandoffPacket): 'session' | 'stage' {
+  if (requiresNativeWorkspaceCapability(handoffPacket)) return 'session';
+  return handoffPacket.stageType === 'implement' ? 'session' : 'stage';
+}
+
+function outputTextForContractCheck(output: SessionOutput): string {
+  return String(output.success ? output.result || '' : output.error || '');
+}
+
+function looksLikePathOnlyTaskFiles(text: string): boolean {
+  if (!/taskFiles|entrypoint|\.bioagent\/tasks\//i.test(text)) return false;
+  const hasInlineContent = /"content"\s*:\s*"(?:\\.|[^"\\]){24,}"/s.test(text)
+    || /```(?:python|py|r|sh|bash)\s*\n[\s\S]*?\.bioagent\/tasks\//i.test(text);
+  if (hasInlineContent) return false;
+  return /"taskFiles"\s*:\s*\[\s*"[^"]*\.bioagent\/tasks\//is.test(text)
+    || /"taskFiles"\s*:\s*\[\s*\{(?:(?!"content").)*"path"\s*:\s*"[^"]*\.bioagent\/tasks\//is.test(text);
+}
+
+export function detectAgentServerStageContractViolation(input: {
+  handoffPacket: BackendHandoffPacket;
+  output: SessionOutput;
+  executionPath: 'agent_backend_adapter' | 'legacy_supervisor';
+  filesChanged: string[];
+  toolCallCount: number;
+}): string | undefined {
+  if (!input.output.success) return undefined;
+  if (!requiresNativeWorkspaceCapability(input.handoffPacket)) return undefined;
+  if (!looksLikePathOnlyTaskFiles(outputTextForContractCheck(input.output))) return undefined;
+  if (input.filesChanged.length > 0 || input.toolCallCount > 0) return undefined;
+  const purpose = bioAgentPurposeFromMetadata(input.handoffPacket.metadata) || 'workspace-capable-task';
+  return [
+    `AgentServer contract violation: ${purpose} returned path-only taskFiles without inline content.`,
+    'No workspace file changes or tool calls were observed, so the stage cannot be treated as completed.',
+    `executionPath=${input.executionPath}`,
+  ].join(' ');
+}
+
 function renderLegacySupervisorContext(
   executionContext: string,
   handoffPacket: BackendHandoffPacket,
@@ -442,6 +510,17 @@ function isFailureStrategy(value: string): value is AgentRunOrchestratorLedger['
     || value === 'continue_with_warnings';
 }
 
+function resolveAgentBackendIdleTimeoutMs(): number {
+  const raw = Number.parseInt(process.env.AGENT_SERVER_AGENT_BACKEND_IDLE_TIMEOUT_MS || '', 10);
+  if (!Number.isFinite(raw)) {
+    return DEFAULT_AGENT_BACKEND_IDLE_TIMEOUT_MS;
+  }
+  if (raw <= 0) {
+    return 0;
+  }
+  return Math.max(30_000, Math.floor(raw));
+}
+
 function inferArtifactKind(path: string): string {
   const normalized = path.toLowerCase();
   if (normalized.endsWith('.json')) {
@@ -471,6 +550,34 @@ function renderTurnsBlock(turns: { role: string; content: string; createdAt: str
 
 function approxTokens(text: string): number {
   return Math.ceil(text.length / 4);
+}
+
+function sessionUsageForTurn(input: {
+  usage?: SessionUsage;
+  message: string;
+  executionContext: string;
+  assistantContent: string;
+}): SessionUsage {
+  if (input.usage) {
+    return {
+      ...input.usage,
+      total: input.usage.total ?? input.usage.input + input.usage.output,
+    };
+  }
+  const inputTokens = approxTokens([input.message, input.executionContext].filter(Boolean).join('\n'));
+  const outputTokens = approxTokens(input.assistantContent || '');
+  return {
+    input: inputTokens,
+    output: outputTokens,
+    total: inputTokens + outputTokens,
+    source: 'estimated',
+  };
+}
+
+function outputWithUsage(output: SessionOutput, usage: SessionUsage): SessionOutput {
+  return output.success
+    ? { ...output, usage }
+    : { ...output, usage };
 }
 
 function round2(value: number): number {
@@ -2847,7 +2954,7 @@ export class AgentServerService {
     let stageRecord: AgentRunStageRecord;
     let stageRecords: AgentRunStageRecord[];
     let orchestratorLedger: AgentRunOrchestratorLedger;
-    if (orchestratorRequest.mode === 'multi_stage' && initialOrchestratorLedger.plan.length > 1) {
+    if (orchestratorRequest.mode === 'multi_stage' && initialOrchestratorLedger.plan.length > 0) {
       const multiStage = await this.runMultiStageBackendTurns({
         agent,
         session,
@@ -2912,8 +3019,15 @@ export class AgentServerService {
         runStartedAtMs,
         createdAt: userTurn.createdAt,
       });
-      output = stageExecution.output;
       stageRecord = single.stageRecord;
+      output = stageExecution.output;
+      if (output.success && stageRecord.status === 'failed') {
+        output = {
+          success: false,
+          error: stageRecord.audit.failureReason || stageRecord.result?.handoffSummary || 'AgentServer stage contract failed.',
+          usage: output.usage,
+        };
+      }
       stageRecords = [stageRecord];
       orchestratorLedger = this.completeOrchestratorLedger(initialOrchestratorLedger, [stageRecord]);
       emitEvent({
@@ -2924,13 +3038,21 @@ export class AgentServerService {
     }
 
     const assistantContent = output.success ? output.result : output.error;
+    const turnUsage = sessionUsageForTurn({
+      usage: output.usage,
+      message,
+      executionContext,
+      assistantContent,
+    });
+    output = outputWithUsage(output, turnUsage);
+    emitEvent({ type: 'usage-update', usage: turnUsage });
     const assistantTurn = {
       kind: 'turn' as const,
       turnId: `turn-${randomUUID()}`,
       runId,
       role: 'assistant' as const,
       content: assistantContent,
-      usage: output.usage,
+      usage: turnUsage,
       createdAt: nowIso(),
       turnNumber: nextTurnNumber + 1,
     };
@@ -3249,8 +3371,35 @@ export class AgentServerService {
     nativeSessionRef?: BackendSessionRef;
     executionPath: 'agent_backend_adapter' | 'legacy_supervisor';
   }> {
-    if (hasAgentBackendAdapter(input.backend) && !shouldRouteModelEndpointThroughSupervisor(input.runtimeModel)) {
+    const requiresWorkspaceCapability = requiresNativeWorkspaceCapability(input.handoffPacket);
+    if (hasAgentBackendAdapter(input.backend) && (requiresWorkspaceCapability || !shouldRouteModelEndpointThroughSupervisor(input.runtimeModel))) {
+      if (requiresWorkspaceCapability && shouldRouteModelEndpointThroughSupervisor(input.runtimeModel)) {
+        input.emitEvent({
+          type: 'status',
+          stageId: input.handoffPacket.stageId,
+          status: 'starting',
+          message: `${input.backend} using native workspace-capable adapter despite configured model endpoint.`,
+          raw: {
+            kind: 'workspace-capability-native-adapter-route',
+            backend: input.backend,
+            provider: input.runtimeModel?.llmEndpoint?.provider || input.runtimeModel?.modelProvider || null,
+            modelName: input.runtimeModel?.llmEndpoint?.modelName || input.runtimeModel?.modelName || null,
+          },
+        });
+      }
       return await this.runSingleStageViaAgentBackendAdapter(input);
+    }
+    if (requiresWorkspaceCapability) {
+      const output: SessionOutput = {
+        success: false,
+        error: `Backend ${input.backend} cannot satisfy this workspace-capable AgentServer task because no native adapter is available.`,
+      };
+      input.emitEvent({ type: 'error', stageId: input.handoffPacket.stageId, error: output.error });
+      input.emitEvent({ type: 'result', output });
+      return {
+        output,
+        executionPath: 'legacy_supervisor',
+      };
     }
     if (!isBackendEnabled(input.backend as BackendType)) {
       const output: SessionOutput = {
@@ -3307,9 +3456,13 @@ export class AgentServerService {
       sandbox: 'danger-full-access' as const,
     };
     let lastBackendEventAt = Date.now();
+    let lastBackendHeartbeatAt = lastBackendEventAt;
     let heartbeat: NodeJS.Timeout | undefined;
     let backendWaitNoticeCount = 0;
-    const sessionScope = input.handoffPacket.stageType === 'implement' ? 'session' as const : 'stage' as const;
+    let backendAbortSent = false;
+    const backendAbortController = new AbortController();
+    const backendIdleTimeoutMs = resolveAgentBackendIdleTimeoutMs();
+    const sessionScope = sessionScopeForHandoff(input.handoffPacket);
     try {
       input.emitEvent({
         type: 'status',
@@ -3321,6 +3474,8 @@ export class AgentServerService {
         textParts.length = 0;
         adapterStageResult = undefined;
         output = undefined;
+        lastBackendEventAt = Date.now();
+        lastBackendHeartbeatAt = lastBackendEventAt;
         sessionRef = await adapter.startSession({
           agentServerSessionId: `${input.agent.id}:${input.session.id}`,
           backend: input.backend,
@@ -3342,10 +3497,31 @@ export class AgentServerService {
 
         if (!heartbeat) {
           heartbeat = setInterval(() => {
+            const now = Date.now();
             const quietMs = Date.now() - lastBackendEventAt;
-            if (quietMs >= 10_000) {
+            if (!backendAbortSent && backendIdleTimeoutMs > 0 && quietMs >= backendIdleTimeoutMs) {
+              backendAbortSent = true;
+              const reason = `${input.backend} backend exceeded AgentServer idle timeout after ${quietMs}ms without a native event.`;
+              backendAbortController.abort(reason);
+              input.emitEvent({
+                type: 'error',
+                stageId: input.handoffPacket.stageId,
+                error: reason,
+              });
+              if (sessionRef) {
+                void adapter.abort({
+                  sessionRef,
+                  runId: input.handoffPacket.runId,
+                  stageId: input.handoffPacket.stageId,
+                  reason,
+                }).catch((error) => {
+                  console.warn('[agent-server] adapter abort after idle timeout failed:', error);
+                });
+              }
+            }
+            if (quietMs >= AGENT_BACKEND_HEARTBEAT_INTERVAL_MS && now - lastBackendHeartbeatAt >= AGENT_BACKEND_HEARTBEAT_INTERVAL_MS) {
               backendWaitNoticeCount += 1;
-              lastBackendEventAt = Date.now();
+              lastBackendHeartbeatAt = now;
               input.emitEvent({
                 type: 'status',
                 stageId: input.handoffPacket.stageId,
@@ -3356,10 +3532,11 @@ export class AgentServerService {
                   backend: input.backend,
                   quietMs,
                   noticeCount: backendWaitNoticeCount,
+                  idleTimeoutMs: backendIdleTimeoutMs,
                 },
               });
             }
-          }, 10_000);
+          }, AGENT_BACKEND_HEARTBEAT_INTERVAL_MS);
           heartbeat.unref?.();
         }
 
@@ -3369,8 +3546,10 @@ export class AgentServerService {
           runtimeModel: input.runtimeModel,
           localDevPolicy: input.localDevPolicy,
           executionPolicy,
+          abortSignal: backendAbortController.signal,
         })) {
           lastBackendEventAt = Date.now();
+          lastBackendHeartbeatAt = lastBackendEventAt;
           if (event.type === 'stage-result') {
             adapterStageResult = event.result;
             input.emitEvent(event);
@@ -3663,7 +3842,7 @@ export class AgentServerService {
       } satisfies AgentRunStageOwnership,
     } satisfies AgentRunStagePlan;
     const output = input.output;
-    const assistantContent = output.success ? output.result : output.error;
+    let assistantContent = output.success ? output.result : output.error;
     const postRunWorkspaceFacts = await this.collectWorkspaceFacts(input.agent.workingDirectory);
     const boundaryVerification = await this.verifyStageBoundary({
       agentId: input.agent.id,
@@ -3674,25 +3853,38 @@ export class AgentServerService {
       events: input.events,
     });
     const backendInfo = this.describeExecutionBackend(stagePlan.backend);
+    const toolCalls = input.stageExecution.adapterStageResult?.toolCalls ?? input.events
+      .filter((event) => event.type === 'tool-call')
+      .map((event) => ({
+        toolName: event.toolName,
+        detail: event.detail,
+        status: 'unknown' as const,
+      }));
+    const contractViolation = detectAgentServerStageContractViolation({
+      handoffPacket: input.handoffPacket,
+      output,
+      executionPath: input.stageExecution.executionPath,
+      filesChanged: boundaryVerification.filesChanged,
+      toolCallCount: toolCalls.length,
+    });
+    if (contractViolation) {
+      assistantContent = contractViolation;
+      boundaryVerification.notes.push(contractViolation);
+    }
+    const stageSucceeded = output.success && !contractViolation;
     const stageResult: BackendStageResult = {
-      status: output.success ? 'completed' : 'failed',
+      status: stageSucceeded ? 'completed' : 'failed',
       finalText: assistantContent,
       filesChanged: boundaryVerification.filesChanged,
       diffSummary: postRunWorkspaceFacts.lastKnownDiffSummary,
-      toolCalls: input.stageExecution.adapterStageResult?.toolCalls ?? input.events
-        .filter((event) => event.type === 'tool-call')
-        .map((event) => ({
-          toolName: event.toolName,
-          detail: event.detail,
-          status: 'unknown' as const,
-        })),
+      toolCalls,
       testsRun: boundaryVerification.testsRun,
       findings: input.stageExecution.adapterStageResult?.findings ?? [],
-      handoffSummary: output.success
+      handoffSummary: stageSucceeded
         ? (input.stageExecution.adapterStageResult?.handoffSummary || excerpt(assistantContent, 500))
         : `Backend failed: ${excerpt(assistantContent, 500)}`,
       nextActions: input.stageExecution.adapterStageResult?.nextActions ?? [],
-      risks: output.success
+      risks: stageSucceeded
         ? (input.stageExecution.adapterStageResult?.risks ?? [])
         : [assistantContent || 'backend returned an error'],
       artifacts: boundaryVerification.artifacts,
@@ -3700,7 +3892,7 @@ export class AgentServerService {
       nativeSessionRef: input.stageExecution.nativeSessionRef || {
         id: `agent-server:${input.agent.id}:${input.agent.activeSessionId}:${stagePlan.backend}`,
         backend: stagePlan.backend,
-        scope: 'stage',
+        scope: sessionScopeForHandoff(input.handoffPacket),
         resumable: backendInfo.resumable,
       },
       boundaryVerification,
@@ -3728,7 +3920,7 @@ export class AgentServerService {
         executionPath: input.stageExecution.executionPath,
         inputSummary: excerpt(input.handoffPacket.userRequest, 500),
         outputSummary: excerpt(assistantContent, 500),
-        failureReason: output.success ? undefined : assistantContent,
+        failureReason: stageSucceeded ? undefined : assistantContent,
         nativeSessionRef: stageResult.nativeSessionRef,
       },
       createdAt: input.createdAt,

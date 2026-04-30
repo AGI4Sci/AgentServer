@@ -413,6 +413,11 @@ export interface AgentTurnRecord {
   runId?: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
+  contentRef?: string;
+  contentSha1?: string;
+  contentBytes?: number;
+  contentPreviewBytes?: number;
+  contentOmitted?: boolean;
   usage?: SessionOutput['usage'];
   createdAt: string;
   turnNumber?: number;

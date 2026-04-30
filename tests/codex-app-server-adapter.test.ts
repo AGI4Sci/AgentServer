@@ -362,6 +362,84 @@ rl.on('line', (line) => {
   assert.equal(stageResult?.result.finalText, 'approved');
 });
 
+test('codex app-server adapter converts native silence into a timeout result', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'agent-server-codex-idle-timeout-'));
+  const fakeServerPath = join(dir, 'fake-codex-idle-timeout-app-server.mjs');
+  await writeFile(fakeServerPath, `
+import { createInterface } from 'node:readline';
+
+const rl = createInterface({ input: process.stdin });
+const write = (message) => process.stdout.write(JSON.stringify(message) + '\\n');
+
+rl.on('line', (line) => {
+  const message = JSON.parse(line);
+  if (message.method === 'initialize') {
+    write({ id: message.id, result: {} });
+    return;
+  }
+  if (message.method === 'initialized') {
+    return;
+  }
+  if (message.method === 'thread/start') {
+    write({ id: message.id, result: { thread: { id: 'thread-1' } } });
+    return;
+  }
+  if (message.method === 'turn/start') {
+    write({ id: message.id, result: { turn: { id: 'turn-1' } } });
+    setInterval(() => {
+      write({ method: 'internal/noop', params: { turnId: 'turn-1' } });
+    }, 5).unref();
+    return;
+  }
+  if (message.method === 'turn/interrupt') {
+    write({ id: message.id, result: { interrupted: true } });
+  }
+});
+`, 'utf8');
+
+  const adapter = new CodexAppServerAgentBackendAdapter({
+    command: process.execPath,
+    args: [fakeServerPath],
+    idleTimeoutMs: 30,
+    turnTimeoutMs: 1000,
+    rpcTimeoutMs: 500,
+  });
+  const sessionRef = await adapter.startSession({
+    agentServerSessionId: 'session-1',
+    backend: 'codex',
+    workspace: dir,
+    scope: 'stage',
+  });
+
+  const events = [];
+  for await (const event of adapter.runTurn({
+    sessionRef,
+    handoff: {
+      runId: 'run-1',
+      stageId: 'stage-1',
+      stageType: 'implement',
+      targetBackend: 'codex',
+      stageInstructions: 'run a fake silent turn',
+      canonicalContext: [],
+      priorStageSummaries: [],
+      workspaceFacts: {
+        root: dir,
+        dirtyFiles: [],
+      },
+      backendRunRecords: [],
+      openQuestions: [],
+    },
+  })) {
+    events.push(event);
+  }
+  await adapter.dispose({ sessionRef });
+
+  assert.ok(events.some((event) => event.type === 'error' && /no native event|stalled turn/i.test(event.error)));
+  const stageResult = events.find((event) => event.type === 'stage-result');
+  assert.equal(stageResult?.result.status, 'timeout');
+  assert.match(stageResult?.result.finalText || '', /no native event|stalled turn/i);
+});
+
 test('codex app-server adapter resolves native model through ModelRuntimeConnection', async () => {
   await withModelEnv({
     AGENT_SERVER_MODEL_PROVIDER: 'openai',

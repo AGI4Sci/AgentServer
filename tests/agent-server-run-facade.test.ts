@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   AgentServerService,
+  detectAgentServerStageContractViolation,
   shouldRouteModelEndpointThroughSupervisor,
 } from '../server/agent_server/service.ts';
 import type {
@@ -190,6 +191,84 @@ test('OpenAI-compatible request model routes through supervisor tool bridge', ()
       modelName: 'local-model',
     },
   }), false);
+});
+
+test('BioAgent workspace task generation rejects path-only taskFiles without workspace evidence', () => {
+  const violation = detectAgentServerStageContractViolation({
+    handoffPacket: {
+      runId: 'run-path-only',
+      stageId: 'stage-path-only',
+      stageType: 'implement',
+      goal: 'Generate BioAgent task',
+      userRequest: 'Generate BioAgent task',
+      canonicalContext: {
+        goal: 'Generate BioAgent task',
+        plan: [],
+        decisions: [],
+        constraints: [],
+        workspaceState: { root: '/tmp/workspace', dirtyFiles: [] },
+        artifacts: [],
+        backendRunRecords: [],
+        openQuestions: [],
+      },
+      stageInstructions: 'implement',
+      constraints: [],
+      workspaceFacts: { root: '/tmp/workspace', dirtyFiles: [] },
+      priorStageSummaries: [],
+      openQuestions: [],
+      metadata: {
+        input: { purpose: 'workspace-task-generation' },
+        runtime: { requiresNativeWorkspaceCapabilities: true },
+      },
+    },
+    output: {
+      success: true,
+      result: '```json\n{"taskFiles":[".bioagent/tasks/missing.py"],"entrypoint":".bioagent/tasks/missing.py"}\n```',
+    },
+    executionPath: 'legacy_supervisor',
+    filesChanged: [],
+    toolCallCount: 0,
+  });
+
+  assert.match(String(violation), /contract violation/i);
+  assert.match(String(violation), /path-only taskFiles/i);
+
+  const ok = detectAgentServerStageContractViolation({
+    handoffPacket: {
+      runId: 'run-inline',
+      stageId: 'stage-inline',
+      stageType: 'implement',
+      goal: 'Generate BioAgent task',
+      userRequest: 'Generate BioAgent task',
+      canonicalContext: {
+        goal: 'Generate BioAgent task',
+        plan: [],
+        decisions: [],
+        constraints: [],
+        workspaceState: { root: '/tmp/workspace', dirtyFiles: [] },
+        artifacts: [],
+        backendRunRecords: [],
+        openQuestions: [],
+      },
+      stageInstructions: 'implement',
+      constraints: [],
+      workspaceFacts: { root: '/tmp/workspace', dirtyFiles: [] },
+      priorStageSummaries: [],
+      openQuestions: [],
+      metadata: {
+        input: { purpose: 'workspace-task-generation' },
+        runtime: { requiresNativeWorkspaceCapabilities: true },
+      },
+    },
+    output: {
+      success: true,
+      result: '{"taskFiles":[{"path":".bioagent/tasks/task.py","language":"python","content":"print(123456789012345678901234567890)"}],"entrypoint":".bioagent/tasks/task.py"}',
+    },
+    executionPath: 'agent_backend_adapter',
+    filesChanged: [],
+    toolCallCount: 0,
+  });
+  assert.equal(ok, undefined);
 });
 
 test('HTTP run result compaction omits huge context while preserving output', () => {

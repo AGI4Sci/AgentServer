@@ -137,6 +137,14 @@ export class GeminiSdkAgentBackendAdapter implements AgentBackendAdapter {
     state.activeStageId = input.handoff.stageId;
     state.abortController = abortController;
     state.lastEventAt = nowIso();
+    const abortListener = (): void => {
+      abortController.abort(input.abortSignal?.reason || 'aborted by AgentServer');
+    };
+    if (input.abortSignal?.aborted) {
+      abortListener();
+    } else {
+      input.abortSignal?.addEventListener('abort', abortListener, { once: true });
+    }
 
     try {
       for await (const geminiEvent of state.session.sendStream(renderGeminiPrompt(input), abortController.signal)) {
@@ -162,6 +170,7 @@ export class GeminiSdkAgentBackendAdapter implements AgentBackendAdapter {
       };
       return;
     } finally {
+      input.abortSignal?.removeEventListener('abort', abortListener);
       state.abortController = undefined;
       state.activeRunId = undefined;
       state.activeStageId = undefined;

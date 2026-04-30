@@ -16,7 +16,7 @@ export interface SessionUsage {
   cacheWrite?: number;
   provider?: string;
   model?: string;
-  source?: 'model-provider';
+  source?: 'model-provider' | 'estimated';
 }
 
 export interface LocalDevPolicyHint {

@@ -52,6 +52,9 @@ export interface CodexAppServerAdapterOptions {
   clientVersion?: string;
   model?: string;
   effort?: string;
+  rpcTimeoutMs?: number;
+  idleTimeoutMs?: number;
+  turnTimeoutMs?: number;
 }
 
 const CODEX_APP_SERVER_CAPABILITIES: AgentBackendCapabilities = {
@@ -68,6 +71,12 @@ const CODEX_APP_SERVER_CAPABILITIES: AgentBackendCapabilities = {
   resumableSession: true,
   statusTransparency: 'full',
 };
+
+const DEFAULT_CODEX_APP_SERVER_RPC_TIMEOUT_MS = 30_000;
+const DEFAULT_CODEX_APP_SERVER_IDLE_TIMEOUT_MS = 120_000;
+const DEFAULT_CODEX_APP_SERVER_TURN_TIMEOUT_MS = 30 * 60_000;
+const CODEX_APP_SERVER_INTERRUPT_TIMEOUT_MS = 2_000;
+const CODEX_APP_SERVER_QUEUE_POLL_MS = 1_000;
 
 export class CodexAppServerAgentBackendAdapter implements AgentBackendAdapter {
   readonly backendId = 'codex' as const;
@@ -98,6 +107,7 @@ export class CodexAppServerAgentBackendAdapter implements AgentBackendAdapter {
       });
     }
     const client = CodexJsonRpcClient.spawn(this.options, input.runtimeModel);
+    const rpcTimeoutMs = resolveCodexAppServerRpcTimeoutMs(this.options);
     await client.request('initialize', {
       clientInfo: {
         name: this.options.clientName || 'agent_server',
@@ -107,7 +117,7 @@ export class CodexAppServerAgentBackendAdapter implements AgentBackendAdapter {
       capabilities: {
         experimentalApi: true,
       },
-    });
+    }, { timeoutMs: rpcTimeoutMs });
     client.notify('initialized');
 
     const startResponse = await client.request('thread/start', {
@@ -117,7 +127,7 @@ export class CodexAppServerAgentBackendAdapter implements AgentBackendAdapter {
       persistExtendedHistory: true,
       approvalPolicy: input.executionPolicy?.approvalPolicy || 'never',
       sandbox: input.executionPolicy?.sandbox || 'danger-full-access',
-    });
+    }, { timeoutMs: rpcTimeoutMs });
     const threadId = readNestedString(startResponse, ['thread', 'id']);
     if (!threadId) {
       await client.close();
@@ -164,15 +174,45 @@ export class CodexAppServerAgentBackendAdapter implements AgentBackendAdapter {
       return defaultCodexServerRequestResponse(message);
     });
     const startedAt = Date.now();
+    const idleTimeoutMs = resolveCodexAppServerIdleTimeoutMs(this.options);
+    const turnTimeoutMs = resolveCodexAppServerTurnTimeoutMs(this.options);
+    const rpcTimeoutMs = resolveCodexAppServerRpcTimeoutMs(this.options);
     const textParts: string[] = [];
     const toolCalls: BackendStageResult['toolCalls'] = [];
     let finalUsage: SessionUsage | undefined;
     let failureReason: string | undefined;
+    let failureStatus: BackendStageResult['status'] = 'failed';
+    let lastNativeEventAt = Date.now();
+    let interruptRequested = false;
 
     state.status = 'running';
     state.activeRunId = input.handoff.runId;
     state.activeStageId = input.handoff.stageId;
     state.lastEventAt = nowIso();
+
+    const interruptActiveTurn = async (reason: string): Promise<void> => {
+      if (interruptRequested || !state.activeTurnId) {
+        return;
+      }
+      interruptRequested = true;
+      await state.client.request('turn/interrupt', {
+        threadId: state.threadId,
+        turnId: state.activeTurnId,
+        reason,
+      }, { timeoutMs: CODEX_APP_SERVER_INTERRUPT_TIMEOUT_MS }).catch(() => undefined);
+    };
+    const abortListener = (): void => {
+      const reason = `Codex app-server turn aborted by AgentServer: ${abortSignalReason(input.abortSignal)}`;
+      failureReason = failureReason || reason;
+      failureStatus = 'cancelled';
+      queue.close();
+      void interruptActiveTurn(reason);
+    };
+    if (input.abortSignal?.aborted) {
+      abortListener();
+    } else {
+      input.abortSignal?.addEventListener('abort', abortListener, { once: true });
+    }
 
     try {
       yield {
@@ -181,25 +221,66 @@ export class CodexAppServerAgentBackendAdapter implements AgentBackendAdapter {
         status: 'running',
         message: 'Codex turn/start requested.',
       };
-      const turnResponse = await state.client.request('turn/start', {
-        threadId: state.threadId,
-        cwd: state.workspace,
-        approvalPolicy: input.executionPolicy?.approvalPolicy || state.executionPolicy?.approvalPolicy || 'never',
-        sandboxPolicy: codexSandboxPolicy(input.executionPolicy?.sandbox || state.executionPolicy?.sandbox || 'danger-full-access'),
-        ...codexTurnOverrides(this.options, input.runtimeModel || state.runtimeModel),
-        input: [
-          {
-            type: 'text',
-            text: renderCodexTurnInput(input),
-          },
-        ],
-      });
-      const turnId = readNestedString(turnResponse, ['turn', 'id']);
-      state.activeTurnId = turnId || undefined;
+      if (failureReason) {
+        yield { type: 'error', stageId: input.handoff.stageId, error: failureReason };
+      } else {
+        const turnResponse = await state.client.request('turn/start', {
+          threadId: state.threadId,
+          cwd: state.workspace,
+          approvalPolicy: input.executionPolicy?.approvalPolicy || state.executionPolicy?.approvalPolicy || 'never',
+          sandboxPolicy: codexSandboxPolicy(input.executionPolicy?.sandbox || state.executionPolicy?.sandbox || 'danger-full-access'),
+          ...codexTurnOverrides(this.options, input.runtimeModel || state.runtimeModel),
+          input: [
+            {
+              type: 'text',
+              text: renderCodexTurnInput(input),
+            },
+          ],
+        }, { timeoutMs: rpcTimeoutMs });
+        const turnId = readNestedString(turnResponse, ['turn', 'id']);
+        state.activeTurnId = turnId || undefined;
 
-      for await (const notification of queue) {
+      while (!failureReason) {
+        const now = Date.now();
+        const elapsedMs = now - startedAt;
+        const quietMs = now - lastNativeEventAt;
+        if (turnTimeoutMs > 0 && elapsedMs >= turnTimeoutMs) {
+          failureStatus = 'timeout';
+          failureReason = `Codex app-server turn timed out after ${turnTimeoutMs}ms without completing.`;
+          yield { type: 'status', stageId: input.handoff.stageId, status: 'failed', message: failureReason };
+          yield { type: 'error', stageId: input.handoff.stageId, error: failureReason };
+          await interruptActiveTurn(failureReason);
+          break;
+        }
+        if (idleTimeoutMs > 0 && quietMs >= idleTimeoutMs) {
+          failureStatus = 'timeout';
+          failureReason = `Codex app-server produced no native event for ${quietMs}ms; aborting stalled turn so the caller can retry or repair instead of waiting indefinitely.`;
+          yield { type: 'status', stageId: input.handoff.stageId, status: 'failed', message: failureReason };
+          yield { type: 'error', stageId: input.handoff.stageId, error: failureReason };
+          await interruptActiveTurn(failureReason);
+          break;
+        }
+
+        const nextDeadlineMs = [
+          idleTimeoutMs > 0 ? idleTimeoutMs - quietMs : CODEX_APP_SERVER_QUEUE_POLL_MS,
+          turnTimeoutMs > 0 ? turnTimeoutMs - elapsedMs : CODEX_APP_SERVER_QUEUE_POLL_MS,
+          CODEX_APP_SERVER_QUEUE_POLL_MS,
+        ]
+          .filter((value) => Number.isFinite(value) && value > 0)
+          .reduce((min, value) => Math.min(min, value), CODEX_APP_SERVER_QUEUE_POLL_MS);
+        const next = await queue.nextOrTimeout(Math.max(1, Math.floor(nextDeadlineMs)));
+        if (!next) {
+          continue;
+        }
+        if (next.done) {
+          break;
+        }
+        const notification = next.value;
         state.lastEventAt = nowIso();
         const normalized = normalizeCodexNotification(notification, input.handoff.stageId, toolCalls);
+        if (normalized.length > 0 || notification.method === 'turn/completed' || notification.method === 'serverRequest/resolved') {
+          lastNativeEventAt = Date.now();
+        }
         if (notification.method === 'serverRequest/resolved') {
           state.pendingApproval = undefined;
           state.status = 'running';
@@ -213,6 +294,7 @@ export class CodexAppServerAgentBackendAdapter implements AgentBackendAdapter {
           }
           if (event.type === 'error') {
             failureReason = event.error;
+            failureStatus = 'failed';
           }
           yield event;
         }
@@ -226,9 +308,11 @@ export class CodexAppServerAgentBackendAdapter implements AgentBackendAdapter {
         ) {
           break;
         }
+        }
       }
     } catch (error) {
       failureReason = error instanceof Error ? error.message : String(error);
+      failureStatus = isAbortishError(failureReason) ? 'cancelled' : 'failed';
       yield {
         type: 'error',
         stageId: input.handoff.stageId,
@@ -237,6 +321,7 @@ export class CodexAppServerAgentBackendAdapter implements AgentBackendAdapter {
     } finally {
       unsubscribe();
       unsubscribeRequest();
+      input.abortSignal?.removeEventListener('abort', abortListener);
       queue.close();
       state.activeRunId = undefined;
       state.activeStageId = undefined;
@@ -251,7 +336,7 @@ export class CodexAppServerAgentBackendAdapter implements AgentBackendAdapter {
       ? appendDiagnostic(failureReason, stderrSummary)
       : textParts.join('').trim();
     const result: BackendStageResult = {
-      status: failureReason ? 'failed' : 'completed',
+      status: failureReason ? failureStatus : 'completed',
       finalText,
       filesChanged: input.handoff.workspaceFacts.dirtyFiles,
       diffSummary: input.handoff.workspaceFacts.lastKnownDiffSummary,
@@ -284,7 +369,8 @@ export class CodexAppServerAgentBackendAdapter implements AgentBackendAdapter {
       await state.client.request('turn/interrupt', {
         threadId: state.threadId,
         turnId: state.activeTurnId,
-      });
+        reason: input.reason || 'aborted by AgentServer',
+      }, { timeoutMs: CODEX_APP_SERVER_INTERRUPT_TIMEOUT_MS }).catch(() => undefined);
     }
     state.status = 'idle';
     state.activeRunId = undefined;
@@ -377,11 +463,29 @@ class CodexJsonRpcClient {
     return new CodexJsonRpcClient(child);
   }
 
-  request(method: string, params?: unknown): Promise<unknown> {
+  request(method: string, params?: unknown, options?: { timeoutMs?: number }): Promise<unknown> {
     const id = this.nextId++;
     const message: JsonRpcMessage = { id, method, params };
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      let timeout: NodeJS.Timeout | undefined;
+      const finish = (fn: () => void): void => {
+        if (timeout) {
+          clearTimeout(timeout);
+        }
+        fn();
+      };
+      this.pending.set(id, {
+        resolve: (value) => finish(() => resolve(value)),
+        reject: (error) => finish(() => reject(error)),
+      });
+      const timeoutMs = options?.timeoutMs;
+      if (timeoutMs && timeoutMs > 0) {
+        timeout = setTimeout(() => {
+          this.pending.delete(id);
+          reject(new Error(`Codex JSON-RPC request ${method} timed out after ${timeoutMs}ms.`));
+        }, timeoutMs);
+        timeout.unref?.();
+      }
       this.write(message);
     });
   }
@@ -502,6 +606,34 @@ class AsyncNotificationQueue implements AsyncIterable<JsonRpcMessage> {
     }
   }
 
+  async nextOrTimeout(timeoutMs: number): Promise<IteratorResult<JsonRpcMessage> | null> {
+    const item = this.items.shift();
+    if (item) {
+      return { value: item, done: false };
+    }
+    if (this.closed) {
+      return { value: undefined, done: true };
+    }
+    return await new Promise<IteratorResult<JsonRpcMessage> | null>((resolve) => {
+      let timeout: NodeJS.Timeout | undefined;
+      const waiter = (value: IteratorResult<JsonRpcMessage>): void => {
+        if (timeout) {
+          clearTimeout(timeout);
+        }
+        resolve(value);
+      };
+      timeout = setTimeout(() => {
+        const index = this.waiters.indexOf(waiter);
+        if (index >= 0) {
+          this.waiters.splice(index, 1);
+        }
+        resolve(null);
+      }, Math.max(1, timeoutMs));
+      timeout.unref?.();
+      this.waiters.push(waiter);
+    });
+  }
+
   [Symbol.asyncIterator](): AsyncIterator<JsonRpcMessage> {
     return {
       next: async () => {
@@ -598,6 +730,53 @@ function appendDiagnostic(message: string, stderrSummary: string): string {
     return message;
   }
   return `${message}\n\nCodex app-server stderr (tail):\n${stderrSummary}`;
+}
+
+function resolveCodexAppServerRpcTimeoutMs(options: CodexAppServerAdapterOptions): number {
+  return resolvePositiveMs(options.rpcTimeoutMs, process.env.AGENT_SERVER_CODEX_APP_SERVER_RPC_TIMEOUT_MS, DEFAULT_CODEX_APP_SERVER_RPC_TIMEOUT_MS, 1_000);
+}
+
+function resolveCodexAppServerIdleTimeoutMs(options: CodexAppServerAdapterOptions): number {
+  return resolvePositiveMs(options.idleTimeoutMs, process.env.AGENT_SERVER_CODEX_APP_SERVER_IDLE_TIMEOUT_MS, DEFAULT_CODEX_APP_SERVER_IDLE_TIMEOUT_MS, 5_000);
+}
+
+function resolveCodexAppServerTurnTimeoutMs(options: CodexAppServerAdapterOptions): number {
+  return resolvePositiveMs(options.turnTimeoutMs, process.env.AGENT_SERVER_CODEX_APP_SERVER_TURN_TIMEOUT_MS, DEFAULT_CODEX_APP_SERVER_TURN_TIMEOUT_MS, 5_000);
+}
+
+function resolvePositiveMs(optionValue: number | undefined, envValue: string | undefined, fallback: number, minimum: number): number {
+  if (optionValue !== undefined) {
+    if (!Number.isFinite(optionValue)) {
+      return fallback;
+    }
+    if (optionValue <= 0) {
+      return 0;
+    }
+    return Math.max(1, Math.floor(optionValue));
+  }
+  const raw = Number.parseInt(String(envValue || ''), 10);
+  if (!Number.isFinite(raw)) {
+    return fallback;
+  }
+  if (raw <= 0) {
+    return 0;
+  }
+  return Math.max(minimum, Math.floor(raw));
+}
+
+function abortSignalReason(signal: AbortSignal | undefined): string {
+  const reason = signal?.reason;
+  if (reason instanceof Error) {
+    return reason.message;
+  }
+  if (typeof reason === 'string') {
+    return reason;
+  }
+  return 'aborted';
+}
+
+function isAbortishError(message: string): boolean {
+  return /abort|cancel|interrupt/i.test(message);
 }
 
 function normalizeCodexNotification(

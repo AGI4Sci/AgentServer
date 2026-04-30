@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { appendFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'fs/promises';
 import { createReadStream, existsSync } from 'fs';
 import { dirname, join } from 'path';
@@ -31,6 +31,7 @@ import {
   getEvolutionProposalPath,
   getAgentSessionsDir,
   getSessionCurrentPath,
+  getSessionArtifactsDir,
   getSessionPersistentConstraintsPath,
   getSessionPersistentSummaryPath,
   getSessionMetaPath,
@@ -43,6 +44,9 @@ import {
 
 const JSONL_PARSE_LINE_LIMIT = Number(process.env.AGENT_SERVER_JSONL_PARSE_LINE_LIMIT || 2_000_000);
 const TURN_LOG_CONTENT_LIMIT = Number(process.env.AGENT_SERVER_TURN_LOG_CONTENT_LIMIT || 120_000);
+const CURRENT_WORK_CONTENT_LIMIT = Number(process.env.AGENT_SERVER_CURRENT_WORK_CONTENT_LIMIT || 24_000);
+const CURRENT_WORK_TURN_LIMIT = Number(process.env.AGENT_SERVER_CURRENT_WORK_TURN_LIMIT || 24);
+const CURRENT_WORK_JSON_LIMIT = Number(process.env.AGENT_SERVER_CURRENT_WORK_JSON_LIMIT || 900_000);
 
 async function ensureDir(dirPath: string): Promise<void> {
   await mkdir(dirPath, { recursive: true });
@@ -212,12 +216,42 @@ function compactOversizedTurn(length: number, head: string): AgentTurnRecord {
   };
 }
 
-function compactTurnForLog(turn: AgentTurnRecord): AgentTurnRecord {
-  if (turn.content.length <= TURN_LOG_CONTENT_LIMIT) return turn;
+async function compactTurnForStorage(
+  agentId: string,
+  sessionId: string,
+  turn: AgentTurnRecord,
+  maxContentChars: number,
+  purpose: 'turn-log' | 'current-work',
+): Promise<AgentTurnRecord> {
+  if (turn.content.length <= maxContentChars) return turn;
+  const contentRef = turn.contentRef ?? await writeTurnContentArtifact(agentId, sessionId, turn);
   return {
     ...turn,
-    content: `${turn.content.slice(0, TURN_LOG_CONTENT_LIMIT)}\n...[truncated ${turn.content.length - TURN_LOG_CONTENT_LIMIT} chars before writing AgentServer turn log]`,
+    content: `${turn.content.slice(0, maxContentChars)}\n...[omitted ${turn.content.length - maxContentChars} chars from ${purpose}; full contentRef=${contentRef}]`,
+    contentRef,
+    contentSha1: turn.contentSha1 ?? sha1Text(turn.content),
+    contentBytes: Buffer.byteLength(turn.content, 'utf8'),
+    contentPreviewBytes: Buffer.byteLength(turn.content.slice(0, maxContentChars), 'utf8'),
+    contentOmitted: true,
   };
+}
+
+async function writeTurnContentArtifact(agentId: string, sessionId: string, turn: AgentTurnRecord): Promise<string> {
+  const turnNumber = turn.turnNumber ?? 'unknown';
+  const id = `${String(turnNumber).padStart(6, '0')}-${safeRefPart(turn.turnId)}-${sha1Text(turn.content).slice(0, 12)}.txt`;
+  const rel = `artifacts/turn-content/${id}`;
+  const path = join(getSessionArtifactsDir(agentId, sessionId), 'turn-content', id);
+  await ensureDir(dirname(path));
+  await writeFile(path, turn.content, 'utf8');
+  return rel;
+}
+
+function safeRefPart(value: string): string {
+  return value.replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 80) || 'turn';
+}
+
+function sha1Text(value: string): string {
+  return createHash('sha1').update(value).digest('hex');
 }
 
 function numberFromRegex(value: string, pattern: RegExp): number | undefined {
@@ -497,9 +531,74 @@ export class AgentStore {
   }
 
   async appendTurn(agentId: string, sessionId: string, turn: AgentTurnRecord): Promise<void> {
-    const compact = compactTurnForLog(turn);
-    await appendJsonLine(getSessionWorkLogPath(agentId, sessionId), compact);
-    await appendJsonLine(getSessionCurrentPath(agentId, sessionId), compact);
+    const logTurn = await compactTurnForStorage(agentId, sessionId, turn, TURN_LOG_CONTENT_LIMIT, 'turn-log');
+    const currentTurn = await compactTurnForStorage(agentId, sessionId, turn, CURRENT_WORK_CONTENT_LIMIT, 'current-work');
+    await appendJsonLine(getSessionWorkLogPath(agentId, sessionId), logTurn);
+    await appendJsonLine(getSessionCurrentPath(agentId, sessionId), currentTurn);
+    await this.pruneCurrentWorkWindow(agentId, sessionId);
+  }
+
+  private async pruneCurrentWorkWindow(agentId: string, sessionId: string): Promise<void> {
+    const entries = await this.listCurrentWork(agentId, sessionId);
+    const rawTurns = entries.filter((entry): entry is AgentTurnRecord => entry.kind === 'turn');
+    const serializedBytes = Buffer.byteLength(JSON.stringify(entries), 'utf8');
+    if (rawTurns.length <= CURRENT_WORK_TURN_LIMIT && serializedBytes <= CURRENT_WORK_JSON_LIMIT) {
+      return;
+    }
+
+    const keepCount = Math.max(4, CURRENT_WORK_TURN_LIMIT);
+    const keepTurnNumbers = new Set(
+      rawTurns
+        .slice(-keepCount)
+        .map((entry) => entry.turnNumber)
+        .filter((value): value is number => typeof value === 'number'),
+    );
+    const prunedTurns = rawTurns.filter((entry) => !keepTurnNumbers.has(entry.turnNumber ?? Number.NaN));
+    if (!prunedTurns.length) return;
+
+    const prunedNumbers = prunedTurns
+      .map((entry) => entry.turnNumber)
+      .filter((value): value is number => typeof value === 'number')
+      .sort((left, right) => left - right);
+    const first = prunedNumbers[0] ?? 0;
+    const last = prunedNumbers[prunedNumbers.length - 1] ?? first;
+    const tag: AgentCompactionTagRecord = {
+      kind: 'partial_compaction',
+      id: `auto-window-${first}-${last}-${Date.now().toString(36)}`,
+      createdAt: nowIso(),
+      decisionBy: 'agent',
+      archived: `work/log/turns.jsonl @turn_${first}-${last}`,
+      turns: `turn_${first}-${last}`,
+      tools: [...new Set(prunedTurns.map((entry) => entry.runId).filter((value): value is string => Boolean(value)))],
+      files: [...new Set(prunedTurns.map((entry) => entry.contentRef).filter((value): value is string => Boolean(value)))],
+      constraints: [],
+      summary: [
+        `Auto-bounded current work by moving ${prunedTurns.length} raw turns to the cold turn ledger range turn_${first}-${last}.`,
+        'Original turn content remains recoverable from work/log/turns.jsonl and any listed contentRef files.',
+      ],
+      mode: 'partial',
+      stableBoundaryTurn: last,
+      dynamicTailTurns: `last ${keepCount} raw turns kept hot`,
+      safetyPointTurn: last,
+      rationale: [
+        'current.jsonl is a hot bounded work window and must not grow without limit.',
+        `Limits: rawTurns<=${CURRENT_WORK_TURN_LIMIT}, serializedBytes<=${CURRENT_WORK_JSON_LIMIT}.`,
+      ],
+    };
+
+    const next: AgentWorkEntry[] = [];
+    let insertedTag = false;
+    for (const entry of entries) {
+      if (entry.kind === 'turn' && !keepTurnNumbers.has(entry.turnNumber ?? Number.NaN)) {
+        if (!insertedTag) {
+          next.push(tag);
+          insertedTag = true;
+        }
+        continue;
+      }
+      next.push(entry);
+    }
+    await this.saveCurrentWork(agentId, sessionId, next);
   }
 
   async listCurrentWork(agentId: string, sessionId: string): Promise<AgentWorkEntry[]> {
