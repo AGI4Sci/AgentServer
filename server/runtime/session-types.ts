@@ -141,6 +141,20 @@ export type SessionStreamEvent =
       usage: SessionUsage;
     } & RuntimeEventBase)
   | ({
+      type: 'contextWindowState';
+      runId?: string;
+      stageId?: string;
+      contextWindowState: Record<string, unknown>;
+      message?: string;
+    } & RuntimeEventBase)
+  | ({
+      type: 'contextCompaction';
+      runId?: string;
+      stageId?: string;
+      contextCompaction: Record<string, unknown>;
+      message?: string;
+    } & RuntimeEventBase)
+  | ({
       type: 'result';
       output: SessionOutput;
       usage?: SessionUsage;

@@ -8,7 +8,11 @@ import type {
   AgentBackendEvent,
   BackendReadableState,
   AbortBackendRunInput,
+  BackendContextCompactionResult,
+  BackendContextWindowState,
+  CompactBackendContextInput,
   DisposeBackendSessionInput,
+  ReadBackendContextWindowInput,
   ReadBackendStateInput,
   RunBackendTurnInput,
   StartBackendSessionInput,
@@ -38,6 +42,8 @@ type GeminiSessionState = BackendReadableState & {
   session: GeminiSession;
   abortController?: AbortController;
   disposed?: boolean;
+  lastUsage?: SessionUsage;
+  lastContextWindowState?: BackendContextWindowState;
 };
 
 export interface GeminiSdkAdapterOptions {
@@ -61,6 +67,11 @@ const GEMINI_SDK_CAPABILITIES: AgentBackendCapabilities = {
   statusTransparency: 'partial',
   multimodalInput: true,
   longContext: true,
+  contextWindowTelemetry: 'provider-usage',
+  nativeCompaction: false,
+  compactionDuringTurn: false,
+  rateLimitTelemetry: true,
+  sessionRotationSafe: true,
 };
 
 export class GeminiSdkAgentBackendAdapter implements AgentBackendAdapter {
@@ -155,6 +166,16 @@ export class GeminiSdkAgentBackendAdapter implements AgentBackendAdapter {
           }
           if (event.type === 'usage-update') {
             finalUsage = event.usage;
+            state.lastUsage = event.usage;
+            state.lastContextWindowState = buildGeminiContextWindowState({
+              sessionRef: state.sessionRef,
+              usage: event.usage,
+              message: 'Gemini SDK reported provider usage; native context-window limit is not exposed by the current SDK/API surface.',
+              metadata: {
+                fallback: 'agentserver/session-rotate',
+                sdkSurface: 'session/sendStream usage events',
+              },
+            });
           }
           yield event;
         }
@@ -241,6 +262,66 @@ export class GeminiSdkAgentBackendAdapter implements AgentBackendAdapter {
       lastEventAt: state.lastEventAt,
       resumable: state.resumable,
       metadata: state.metadata,
+    };
+  }
+
+  async readContextWindowState(input: ReadBackendContextWindowInput): Promise<BackendContextWindowState> {
+    const state = this.requireState(input.sessionRef);
+    if (state.lastContextWindowState) {
+      return {
+        ...state.lastContextWindowState,
+        sessionRef: state.sessionRef,
+        backend: this.backendId,
+        lastUpdatedAt: nowIso(),
+      };
+    }
+    return buildGeminiContextWindowState({
+      sessionRef: state.sessionRef,
+      usage: state.lastUsage,
+      message: state.lastUsage
+        ? 'Gemini SDK reported provider usage; native context-window limit is not exposed by the current SDK/API surface.'
+        : 'Gemini SDK session has not reported usage yet; native context-window telemetry is not exposed by the current SDK/API surface.',
+      metadata: {
+        reason: input.reason,
+        fallback: 'agentserver/session-rotate',
+        sdkSurface: 'session/resumeSession/sendStream',
+      },
+    });
+  }
+
+  async compactContext(input: CompactBackendContextInput): Promise<BackendContextCompactionResult> {
+    const state = this.requireState(input.sessionRef);
+    const startedAt = nowIso();
+    const before = await this.readContextWindowState(input);
+    const after: BackendContextWindowState = {
+      ...before,
+      status: 'watch',
+      lastUpdatedAt: nowIso(),
+      message: 'Gemini SDK/API does not expose native session compaction or in-place reset; AgentServer must compact handoff/current-work and rotate the SDK session when needed.',
+      metadata: {
+        ...(before.metadata || {}),
+        fallback: 'agentserver/session-rotate',
+        nativeCompaction: false,
+        sessionRotationSafe: true,
+      },
+    };
+    state.lastContextWindowState = after;
+    return {
+      sessionRef: state.sessionRef,
+      backend: this.backendId,
+      status: 'skipped',
+      capabilityUsed: 'fallback',
+      reason: input.reason || 'Gemini SDK/API has no native compact/clear/reset method exposed to AgentServer.',
+      before,
+      after,
+      startedAt,
+      completedAt: nowIso(),
+      userVisibleSummary: 'Gemini 暂无原生上下文压缩接口；已标记为 AgentServer 压缩与 session rotation fallback。',
+      auditRefs: [state.sessionRef.id],
+      metadata: {
+        fallback: 'agentserver/session-rotate',
+        sdkSurfaceChecked: ['session()', 'resumeSession()', 'sendStream()', 'usage stream'],
+      },
     };
   }
 
@@ -384,6 +465,40 @@ function buildGeminiStageResult(
     artifacts: [],
     usage,
     nativeSessionRef: input.sessionRef,
+  };
+}
+
+function buildGeminiContextWindowState(input: {
+  sessionRef: BackendSessionRef;
+  usage?: SessionUsage;
+  message: string;
+  metadata?: Record<string, unknown>;
+}): BackendContextWindowState {
+  const usage = input.usage;
+  const summedTokens = (usage?.input ?? 0) + (usage?.output ?? 0) + (usage?.cacheRead ?? 0) + (usage?.cacheWrite ?? 0);
+  const usedTokens = usage?.total ?? (summedTokens || undefined);
+  return {
+    sessionRef: input.sessionRef,
+    backend: 'gemini',
+    status: 'unknown',
+    source: usage ? 'provider-usage' : 'unknown',
+    usedTokens,
+    lastUsage: usage ? {
+      input: usage.input,
+      output: usage.output,
+      total: usage.total ?? usedTokens,
+      cacheRead: usage.cacheRead,
+      cacheWrite: usage.cacheWrite,
+      provider: usage.provider || 'gemini',
+      model: usage.model,
+      source: usage.source,
+    } : undefined,
+    lastUpdatedAt: nowIso(),
+    message: input.message,
+    metadata: {
+      ...(input.metadata || {}),
+      compactCapability: 'session-rotate',
+    },
   };
 }
 

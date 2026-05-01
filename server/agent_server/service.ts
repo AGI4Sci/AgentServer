@@ -12,6 +12,10 @@ import {
 } from '../../core/runtime/backend-catalog.js';
 import type { AgentBackendId } from '../../core/runtime/backend-catalog.js';
 import type { SessionOutput, SessionStreamEvent, SessionUsage } from '../runtime/session-types.js';
+import type {
+  BackendContextCompactionResult,
+  BackendContextWindowState,
+} from '../runtime/agent-backend-adapter-contract.js';
 import { mergeModelProviderUsage } from '../runtime/model-provider-usage.js';
 import { runSessionViaSupervisor } from '../runtime/supervisor-session-runner.js';
 import { containsEmbeddedProviderToolCallText } from '../runtime/workers/openai-compatible-stream.js';
@@ -152,6 +156,7 @@ const DEFAULT_AUTONOMOUS_AGENT_POLICY = {
 const APPROX_CONTEXT_TOKENS = 20_000;
 const WORK_RATIO_SOFT_THRESHOLD = 0.6;
 const WORK_RATIO_HARD_THRESHOLD = 0.85;
+const PREFLIGHT_CONTEXT_COMPACT_TOKEN_THRESHOLD = 4_000;
 const CACHE_HIT_PRICE_FACTOR = 0.1;
 const MIN_PARTIAL_COST_SAVINGS_PER_TURN = 120;
 const MIN_PARTIAL_COST_SAVINGS_RATIO = 0.08;
@@ -508,6 +513,16 @@ function resolveOrchestratorRequest(metadata?: Record<string, unknown>): {
   };
 }
 
+interface AgentServerPreflightCompactionResult {
+  contextSnapshot: AgentContextSnapshot;
+  contextPolicy: Required<AgentMessageContextPolicy>;
+  contextWindowState?: BackendContextWindowState;
+  contextCompaction?: BackendContextCompactionResult;
+  contextRefs: AgentContextRef[];
+  metadata?: Record<string, unknown>;
+  events: SessionStreamEvent[];
+}
+
 function isRuleBasedStagePlanKind(value: string): value is RuleBasedStagePlanKind {
   return value === 'implement-only'
     || value === 'implement-review'
@@ -530,6 +545,37 @@ function resolveAgentBackendIdleTimeoutMs(): number {
     return 0;
   }
   return Math.max(30_000, Math.floor(raw));
+}
+
+function hasDeepSignal(value: unknown, pattern: RegExp, depth = 0): boolean {
+  if (depth > 5 || value == null) return false;
+  if (typeof value === 'string') return pattern.test(value);
+  if (typeof value === 'number' || typeof value === 'boolean') return pattern.test(String(value));
+  if (Array.isArray(value)) return value.some((item) => hasDeepSignal(item, pattern, depth + 1));
+  if (typeof value !== 'object') return false;
+  return Object.entries(value as Record<string, unknown>).some(([key, item]) => (
+    pattern.test(key) || hasDeepSignal(item, pattern, depth + 1)
+  ));
+}
+
+function countDeepArrayItems(value: unknown, keyPattern: RegExp, depth = 0): number {
+  if (depth > 5 || value == null) return 0;
+  if (Array.isArray(value)) {
+    return value.reduce((sum, item) => sum + countDeepArrayItems(item, keyPattern, depth + 1), 0);
+  }
+  if (typeof value !== 'object') return 0;
+  let count = 0;
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    if (keyPattern.test(key) && Array.isArray(item)) count += item.length;
+    count += countDeepArrayItems(item, keyPattern, depth + 1);
+  }
+  return count;
+}
+
+function contextWindowStatusFromWorkBudget(status: AgentWorkBudgetSnapshot['status']): BackendContextWindowState['status'] {
+  if (status === 'hard_threshold_reached') return 'near-limit';
+  if (status === 'soft_threshold_reached') return 'watch';
+  return 'ok';
 }
 
 function inferArtifactKind(path: string): string {
@@ -2829,9 +2875,9 @@ export class AgentServerService {
     if (!message) {
       throw new Error('message is required');
     }
-    const contextPolicy = resolveAgentMessageContextPolicy(request.contextPolicy);
+    let contextPolicy = resolveAgentMessageContextPolicy(request.contextPolicy);
 
-    const contextSnapshot = await this.getContextSnapshot(agentId);
+    let contextSnapshot = await this.getContextSnapshot(agentId);
     const { agent } = contextSnapshot;
     const session = await this.store.getActiveSession(agent.id);
     if (!session) {
@@ -2861,6 +2907,29 @@ export class AgentServerService {
     });
     if (orchestratorRequest.failureStrategy) {
       initialOrchestratorLedger.policy.failureStrategy = orchestratorRequest.failureStrategy;
+    }
+    const events: SessionStreamEvent[] = [];
+    const emitEvent = (event: SessionStreamEvent): void => {
+      events.push(event);
+      try {
+        stream?.onEvent?.(event);
+      } catch (error) {
+        console.warn('[agent-server] stream event callback failed:', error);
+      }
+    };
+    const preflightCompaction = await this.preflightRunContextCompaction({
+      agent,
+      session,
+      contextSnapshot,
+      contextPolicy,
+      request,
+      runId,
+      stageId,
+    });
+    contextSnapshot = preflightCompaction.contextSnapshot;
+    contextPolicy = preflightCompaction.contextPolicy;
+    for (const event of preflightCompaction.events) {
+      emitEvent(event);
     }
     agent.runtime.isRunning = true;
     agent.runtime.currentRunId = runId;
@@ -2892,7 +2961,10 @@ export class AgentServerService {
       message,
       contextPolicy,
     );
-    const contextRefs = this.buildRunContextRefs(contextSnapshot, contextPolicy);
+    const contextRefs = [
+      ...this.buildRunContextRefs(contextSnapshot, contextPolicy),
+      ...preflightCompaction.contextRefs,
+    ];
     const workspaceFacts = await this.collectWorkspaceFacts(agent.workingDirectory);
     const constraints = [
       ...contextSnapshot.memoryConstraintEntries.map((item) => item.desc),
@@ -2931,7 +3003,10 @@ export class AgentServerService {
       workspaceFacts,
       priorStageSummaries: [],
       openQuestions,
-      metadata: request.metadata,
+      metadata: {
+        ...(request.metadata ?? {}),
+        ...(preflightCompaction.metadata ? { agentServerPreflight: preflightCompaction.metadata } : {}),
+      },
     });
     const userTurn = {
       kind: 'turn' as const,
@@ -2945,15 +3020,6 @@ export class AgentServerService {
     await this.store.appendTurn(agent.id, session.id, userTurn);
     const runStartedAtMs = Date.now();
 
-    const events: SessionStreamEvent[] = [];
-    const emitEvent = (event: SessionStreamEvent): void => {
-      events.push(event);
-      try {
-        stream?.onEvent?.(event);
-      } catch (error) {
-        console.warn('[agent-server] stream event callback failed:', error);
-      }
-    };
     emitEvent({
       type: 'run-plan',
       runId,
@@ -2976,7 +3042,10 @@ export class AgentServerService {
         canonicalContext,
         constraints,
         openQuestions,
-        metadata: request.metadata,
+        metadata: {
+          ...(request.metadata ?? {}),
+          ...(preflightCompaction.metadata ? { agentServerPreflight: preflightCompaction.metadata } : {}),
+        },
         runtimeModel: request,
         localDevPolicy: request.localDevPolicy,
         runStartedAtMs,
@@ -3114,7 +3183,10 @@ export class AgentServerService {
               usage: output.usage,
             },
             evaluation: basicEvaluation,
-            metadata: request.metadata,
+            metadata: {
+              ...(request.metadata ?? {}),
+              ...(preflightCompaction.metadata ? { agentServerPreflight: preflightCompaction.metadata } : {}),
+            },
             createdAt: userTurn.createdAt,
             completedAt: assistantTurn.createdAt,
           },
@@ -3159,7 +3231,10 @@ export class AgentServerService {
       evaluation: {
         ...evaluation,
       },
-      metadata: request.metadata,
+      metadata: {
+        ...(request.metadata ?? {}),
+        ...(preflightCompaction.metadata ? { agentServerPreflight: preflightCompaction.metadata } : {}),
+      },
       createdAt: userTurn.createdAt,
       completedAt: assistantTurn.createdAt,
     };
@@ -3183,6 +3258,250 @@ export class AgentServerService {
     await this.store.saveAgent(agent);
     await this.maybeCompactAfterRun(agent.id, session.id);
     return run;
+  }
+
+  private async preflightRunContextCompaction(input: {
+    agent: AgentManifest;
+    session: AgentSessionRecord;
+    contextSnapshot: AgentContextSnapshot;
+    contextPolicy: Required<AgentMessageContextPolicy>;
+    request: AgentMessageRequest;
+    runId: string;
+    stageId: string;
+  }): Promise<AgentServerPreflightCompactionResult> {
+    const { agent, session, request, runId, stageId } = input;
+    const events: SessionStreamEvent[] = [];
+    const contextRefs: AgentContextRef[] = [];
+    const metadata: Record<string, unknown> = {};
+    const workBudget = input.contextSnapshot.workBudget;
+    const metadataBlob = request.metadata ?? {};
+    const priorAttemptCount = countDeepArrayItems(metadataBlob, /priorAttempts?|attempts/i);
+    const priorRunCount = countDeepArrayItems(metadataBlob, /priorRuns?|recentExecutionRefs|backendRunRecords/i);
+    const repairSignal = agent.runtime.consecutiveErrors > 0
+      || hasDeepSignal(metadataBlob, /\b(repair|rerun|retry|failed|failure|fix)\b/i);
+    const slimmingSignal = hasDeepSignal(metadataBlob, /slim|slimming|handoffBudget|rawRef|normalizedBytes|omittedCount|savedTokens|contextEstimate/i);
+    const currentWorkLarge = workBudget.status !== 'healthy'
+      || workBudget.approxCurrentWorkTokens >= PREFLIGHT_CONTEXT_COMPACT_TOKEN_THRESHOLD;
+    const priorContextLarge = priorAttemptCount >= 2 || priorRunCount >= 4;
+    const shouldInspect = input.contextPolicy.includeCurrentWork
+      || repairSignal
+      || priorContextLarge
+      || currentWorkLarge
+      || slimmingSignal;
+
+    const beforeState: BackendContextWindowState = {
+      sessionRef: {
+        id: `agentserver:${agent.id}:${session.id}`,
+        backend: agent.backend,
+        scope: 'session',
+        resumable: true,
+      },
+      backend: agent.backend,
+      status: contextWindowStatusFromWorkBudget(workBudget.status),
+      source: 'agentserver-estimate',
+      usedTokens: workBudget.approxPrefixTokens + workBudget.approxCurrentWorkTokens,
+      maxTokens: workBudget.approxContextTokens,
+      ratio: workBudget.approxCurrentWorkTokens / Math.max(1, workBudget.approxRemainingTokens),
+      autoCompactTokenLimit: Math.floor(workBudget.approxRemainingTokens * workBudget.softThreshold),
+      lastUpdatedAt: nowIso(),
+      message: 'AgentServer estimated current-work pressure before backend dispatch.',
+      metadata: {
+        includeCurrentWork: input.contextPolicy.includeCurrentWork,
+        currentWorkEntries: input.contextSnapshot.currentWorkEntries.length,
+        workLayout: input.contextSnapshot.workLayout.strategy,
+        workBudgetStatus: workBudget.status,
+        priorAttemptCount,
+        priorRunCount,
+        repairSignal,
+        slimmingSignal,
+      },
+    };
+
+    if (shouldInspect) {
+      const stateEvent: SessionStreamEvent = {
+        type: 'contextWindowState',
+        runId,
+        stageId,
+        message: beforeState.message,
+        contextWindowState: {
+          backend: agent.backend,
+          status: beforeState.status,
+          source: beforeState.source,
+          usedTokens: beforeState.usedTokens,
+          windowTokens: beforeState.maxTokens,
+          ratio: beforeState.ratio,
+          compactCapability: 'agentserver',
+          metadata: beforeState.metadata,
+        },
+        raw: beforeState,
+      };
+      events.push(stateEvent);
+    }
+
+    const shouldCompact = shouldInspect && (
+      workBudget.status !== 'healthy'
+      || (input.contextPolicy.includeCurrentWork && currentWorkLarge)
+      || ((repairSignal || priorContextLarge || slimmingSignal) && workBudget.approxCurrentWorkTokens >= 1_000)
+    );
+    if (!shouldCompact) {
+      return {
+        contextSnapshot: input.contextSnapshot,
+        contextPolicy: input.contextPolicy,
+        contextWindowState: shouldInspect ? beforeState : undefined,
+        contextRefs,
+        metadata: shouldInspect ? { contextWindowPreflight: beforeState.metadata } : undefined,
+        events,
+      };
+    }
+
+    const startedAt = nowIso();
+    let contextSnapshot = input.contextSnapshot;
+    let contextPolicy = input.contextPolicy;
+    let compaction: BackendContextCompactionResult;
+    try {
+      const preview = await this.previewCompaction(agent.id, { mode: 'auto', decisionBy: 'agent' });
+      const tag = await this.compactSessionWork(agent, session, preview.recommendedMode === 'none' ? 'auto' : preview.recommendedMode, 'agent');
+      contextSnapshot = await this.getContextSnapshot(agent.id);
+      const afterBudget = contextSnapshot.workBudget;
+      const afterState: BackendContextWindowState = {
+        ...beforeState,
+        status: contextWindowStatusFromWorkBudget(afterBudget.status),
+        usedTokens: afterBudget.approxPrefixTokens + afterBudget.approxCurrentWorkTokens,
+        maxTokens: afterBudget.approxContextTokens,
+        ratio: afterBudget.approxCurrentWorkTokens / Math.max(1, afterBudget.approxRemainingTokens),
+        autoCompactTokenLimit: Math.floor(afterBudget.approxRemainingTokens * afterBudget.softThreshold),
+        lastUpdatedAt: nowIso(),
+        lastCompactedAt: tag?.createdAt,
+        message: tag
+          ? `AgentServer compacted current work before dispatch: ${tag.id}.`
+          : 'AgentServer preview found no safe current-work compaction to apply before dispatch.',
+        metadata: {
+          ...beforeState.metadata,
+          previewRecommendedMode: preview.recommendedMode,
+          compactTagId: tag?.id,
+          compactTurns: tag?.turns,
+        },
+      };
+      compaction = {
+        sessionRef: beforeState.sessionRef,
+        backend: agent.backend,
+        status: tag ? 'compacted' : 'skipped',
+        capabilityUsed: 'agentserver',
+        reason: 'run-preflight-current-work',
+        before: beforeState,
+        after: afterState,
+        startedAt,
+        completedAt: nowIso(),
+        userVisibleSummary: afterState.message,
+        auditRefs: tag ? [`current-work:${tag.id}`, `turns:${tag.turns}`] : ['current-work:preview-skipped'],
+        metadata: {
+          previewDecision: preview.decision,
+          previewRecommendedMode: preview.recommendedMode,
+          includeCurrentWork: input.contextPolicy.includeCurrentWork,
+          repairSignal,
+          priorAttemptCount,
+          priorRunCount,
+          slimmingSignal,
+        },
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const failureRef = `context-compaction-failure:${runId}`;
+      compaction = {
+        sessionRef: beforeState.sessionRef,
+        backend: agent.backend,
+        status: 'failed',
+        capabilityUsed: 'agentserver',
+        reason: 'run-preflight-current-work',
+        before: beforeState,
+        startedAt,
+        completedAt: nowIso(),
+        userVisibleSummary: `AgentServer current-work compaction failed before dispatch: ${message}`,
+        auditRefs: [failureRef],
+        metadata: {
+          error: message,
+          includeCurrentWork: input.contextPolicy.includeCurrentWork,
+          recoveryContext: 'Current work was omitted from this dispatch; cold turn log and current-work refs remain recoverable.',
+        },
+      };
+      const issues = [
+        ...(session.recovery?.issues ?? []),
+        this.createRecoveryIssue(
+          'context_compaction_failed',
+          `${failureRef}: ${message}`,
+          'warning',
+        ),
+      ];
+      await this.store.replaceSessionRecoveryIssues(agent.id, session.id, issues, 'needs_human');
+      contextPolicy = {
+        ...contextPolicy,
+        includeCurrentWork: false,
+      };
+      contextRefs.push({
+        scope: 'runtime',
+        kind: 'context-compaction-failure',
+        id: failureRef,
+        label: 'AgentServer preflight current-work compaction failed',
+        metadata: compaction.metadata,
+      });
+      contextSnapshot = await this.getContextSnapshot(agent.id);
+    }
+
+    events.push({
+      type: 'contextCompaction',
+      runId,
+      stageId,
+      message: compaction.userVisibleSummary,
+      contextCompaction: {
+        backend: compaction.backend,
+        status: compaction.status,
+        capabilityUsed: compaction.capabilityUsed,
+        reason: compaction.reason,
+        before: compaction.before ? {
+          status: compaction.before.status,
+          source: compaction.before.source,
+          usedTokens: compaction.before.usedTokens,
+          maxTokens: compaction.before.maxTokens,
+          ratio: compaction.before.ratio,
+        } : undefined,
+        after: compaction.after ? {
+          status: compaction.after.status,
+          source: compaction.after.source,
+          usedTokens: compaction.after.usedTokens,
+          maxTokens: compaction.after.maxTokens,
+          ratio: compaction.after.ratio,
+        } : undefined,
+        auditRefs: compaction.auditRefs,
+        metadata: compaction.metadata,
+      },
+      raw: compaction,
+    });
+    contextRefs.push({
+      scope: 'runtime',
+      kind: 'context-compaction',
+      id: compaction.auditRefs?.[0],
+      label: `AgentServer preflight compaction ${compaction.status}`,
+      metadata: {
+        status: compaction.status,
+        capabilityUsed: compaction.capabilityUsed,
+        auditRefs: compaction.auditRefs,
+      },
+    });
+    metadata.contextWindowPreflight = {
+      status: compaction.status,
+      capabilityUsed: compaction.capabilityUsed,
+      auditRefs: compaction.auditRefs,
+      failed: compaction.status === 'failed',
+    };
+    return {
+      contextSnapshot,
+      contextPolicy,
+      contextWindowState: beforeState,
+      contextCompaction: compaction,
+      contextRefs,
+      metadata,
+      events,
+    };
   }
 
   private assembleContext(

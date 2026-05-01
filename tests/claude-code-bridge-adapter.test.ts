@@ -16,6 +16,7 @@ test('claude code bridge adapter exposes partial structured backend capabilities
   assert.equal(capabilities.structuredEvents, true);
   assert.equal(capabilities.readableState, true);
   assert.equal(capabilities.abortableRun, false);
+  assert.equal(capabilities.nativeCompaction, true);
   assert.equal(capabilities.statusTransparency, 'partial');
 });
 
@@ -39,6 +40,8 @@ test('claude code bridge adapter manages readable session lifecycle', async () =
   assert.deepEqual(idleState.metadata, {
     test: true,
     bridge: 'agent-server-supervisor',
+    nativeCompaction: '/compact',
+    nativeContextSignals: ['usage-update', 'compact_boundary', 'status=compacting'],
   });
 
   await adapter.abort({

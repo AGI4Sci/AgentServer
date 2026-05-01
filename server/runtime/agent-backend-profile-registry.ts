@@ -214,6 +214,11 @@ export const STRATEGIC_AGENT_BACKEND_PROFILES: readonly StrategicAgentBackendPro
       statusTransparency: 'partial',
       multimodalInput: true,
       longContext: true,
+      contextWindowTelemetry: 'provider-usage',
+      nativeCompaction: false,
+      compactionDuringTurn: false,
+      rateLimitTelemetry: true,
+      sessionRotationSafe: true,
     },
     targetCapabilities: {
       ...FULL_CODE_AGENT_TARGET,
@@ -253,7 +258,8 @@ export const STRATEGIC_AGENT_BACKEND_PROFILES: readonly StrategicAgentBackendPro
     upstreamOverrideDoc: 'docs/upstream-backend-overrides.md#gemini',
     notes: [
       'AgentServer has a Gemini CLI SDK adapter prototype.',
-      'The SDK path covers core loop, tool execution, and session context, while advanced hooks/subagents/ACP remain capability gaps.',
+      'The SDK path covers core loop, tool execution, session context, and provider usage events, while advanced hooks/subagents/ACP remain capability gaps.',
+      'Current Gemini SDK/API surface does not expose native context-window limit, native session compaction, or in-place session reset; AgentServer uses external context compaction and session rotation fallback.',
     ],
   },
   {

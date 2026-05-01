@@ -13,7 +13,8 @@ export type AgentRecoveryIssueKind =
   | 'missing_turn_log'
   | 'active_session_pointer_recovered'
   | 'active_session_recreated'
-  | 'persistent_budget_exceeded';
+  | 'persistent_budget_exceeded'
+  | 'context_compaction_failed';
 export type ConstraintSourceType =
   | 'api_behavior'
   | 'db_state'
