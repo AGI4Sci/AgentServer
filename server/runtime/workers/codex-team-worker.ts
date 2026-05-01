@@ -27,6 +27,7 @@ import { runOpenAICompatibleStreamingChat, shouldUseDirectOpenAICompatibleRuntim
 import { containsEmbeddedProviderToolCallText } from './openai-compatible-stream.js';
 import { containsUnexecutedToolIntentText } from './openai-compatible-stream.js';
 import { runSharedRuntimeToolFallback } from '../shared/runtime-tool-fallback.js';
+import { outputWithMergedModelProviderUsage } from '../model-provider-usage.js';
 import { normalizeStreamingText } from './stream-normalizer.js';
 import {
   buildRuntimeCompletedMessage,
@@ -1399,10 +1400,10 @@ export class CodexTeamWorker {
       && requestClearlyDemandsRealTools(request)
       && (containsEmbeddedProviderToolCallText(output.result) || containsUnexecutedToolIntentText(output.result))
     ) {
-      return await this.runLocalToolFallback(request, run);
+      return outputWithMergedModelProviderUsage(await this.runLocalToolFallback(request, run), [output.usage]);
     }
     if (!output.success && isRecoverableDirectChatFailure(output.error)) {
-      return await this.runLocalToolFallback(request, run);
+      return outputWithMergedModelProviderUsage(await this.runLocalToolFallback(request, run), [output.usage]);
     }
     return output;
   }

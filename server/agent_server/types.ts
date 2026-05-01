@@ -46,7 +46,7 @@ export interface AgentRuntimeState {
 export interface AgentManifest {
   id: string;
   name: string;
-  backend: BackendType;
+  backend: AgentBackendId;
   workingDirectory: string;
   runtimeTeamId: string;
   runtimeAgentId: string;
@@ -337,7 +337,7 @@ export interface AgentRunMetrics {
   durationMs: number;
   toolCallCount: number;
   approxContextTokens: number;
-  backend: BackendType;
+  backend: AgentBackendId;
   usage?: SessionOutput['usage'];
 }
 
@@ -840,7 +840,7 @@ export interface AgentRetrievalResult {
 export interface CreateAgentRequest {
   id?: string;
   name?: string;
-  backend?: BackendType;
+  backend?: AgentBackendId;
   workingDirectory: string;
   runtimeTeamId?: string;
   runtimeAgentId?: string;
@@ -925,7 +925,7 @@ export interface AgentServerRunRequest {
   agent: {
     id?: string;
     name?: string;
-    backend?: BackendType;
+    backend?: AgentBackendId;
     workspace?: string;
     workingDirectory?: string;
     systemPrompt?: string;
@@ -944,7 +944,7 @@ export interface AgentServerRunRequest {
   };
   contextPolicy?: AgentMessageContextPolicy;
   runtime?: {
-    backend?: BackendType;
+    backend?: AgentBackendId;
     cwd?: string;
     model?: RuntimeModelInput['model'];
     modelProvider?: RuntimeModelInput['modelProvider'];

@@ -1,4 +1,4 @@
-import type { SessionUsage } from './session-types.js';
+import type { SessionOutput, SessionUsage } from './session-types.js';
 
 export interface ModelProviderUsageMetadata {
   provider?: string | null;
@@ -86,6 +86,19 @@ export function mergeModelProviderUsage(usages: Array<SessionUsage | undefined>)
     cacheRead: merged.cacheRead || undefined,
     cacheWrite: merged.cacheWrite || undefined,
   };
+}
+
+export function outputWithMergedModelProviderUsage(
+  output: SessionOutput,
+  usages: Array<SessionUsage | undefined>,
+): SessionOutput {
+  const usage = mergeModelProviderUsage([...usages, output.usage]);
+  if (!usage) {
+    return output;
+  }
+  return output.success
+    ? { ...output, usage }
+    : { ...output, usage };
 }
 
 function readNumber(value: unknown): number {

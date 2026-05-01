@@ -22,6 +22,7 @@ import type {
 } from '../team-worker-types.js';
 import { requestDemandsRuntimeToolExecution } from '../shared/runtime-tool-requirements.js';
 import { runSharedRuntimeToolFallback } from '../shared/runtime-tool-fallback.js';
+import { outputWithMergedModelProviderUsage } from '../model-provider-usage.js';
 import { resolveManagedBackendExecutableForBackend } from './backend-managed-launchers.js';
 import {
   containsEmbeddedProviderToolCallText,
@@ -771,7 +772,7 @@ export class OpenClawTeamWorker {
               && requestDemandsRuntimeToolExecution(request)
               && (containsEmbeddedProviderToolCallText(output.result) || containsUnexecutedToolIntentText(output.result))
             ) {
-              settleRun(request, run, await this.runLocalToolFallback(request, run));
+              settleRun(request, run, outputWithMergedModelProviderUsage(await this.runLocalToolFallback(request, run), [output.usage]));
               return;
             }
             settleRun(request, run, output);

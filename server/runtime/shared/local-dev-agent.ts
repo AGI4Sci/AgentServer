@@ -7,15 +7,26 @@ import { appendFileSync, mkdirSync } from 'fs';
 import { join, resolve } from 'path';
 import { executeRoutedToolCall } from '../tool-executor.js';
 import type { ToolRoutingPolicy, WorkerProfile, WorkspaceSpec } from '../../../core/runtime/tool-routing.js';
+import type { SessionUsage } from '../session-types.js';
+import { mergeModelProviderUsage } from '../model-provider-usage.js';
+import {
+  ModelProviderCallError,
+  requestOpenAICompatibleTextCompletion,
+} from '../model-provider-client.js';
 
 export type LocalDevChatMessage = {
   role: 'system' | 'user' | 'assistant';
   content: string;
 };
 
+export type LocalDevTextCompletionResult = {
+  text: string;
+  usage?: SessionUsage;
+};
+
 export type LocalDevTextCompletionRequester = (params: {
   messages: LocalDevChatMessage[];
-}) => Promise<string>;
+}) => Promise<string | LocalDevTextCompletionResult>;
 
 type AgentHooks = {
   onToolCall?: (toolName: string, detail?: string) => void;
@@ -82,100 +93,6 @@ function logLocalDevAgentDebug(payload: Record<string, unknown>): void {
   } catch {
     // ignore debug logging failures
   }
-}
-
-function extractTextParts(content: unknown): string {
-  if (typeof content === 'string') {
-    return content;
-  }
-  if (!Array.isArray(content)) {
-    return '';
-  }
-  return content
-    .map((item) => {
-      if (!item || typeof item !== 'object') {
-        return '';
-      }
-      const part = item as { type?: unknown; text?: unknown };
-      return part.type === 'text' && typeof part.text === 'string' ? part.text : '';
-    })
-    .join('');
-}
-
-function extractReasoningText(content: unknown): string {
-  if (typeof content === 'string') {
-    return content;
-  }
-  if (!Array.isArray(content)) {
-    return '';
-  }
-  return content
-    .map((item) => {
-      if (!item || typeof item !== 'object') {
-        return '';
-      }
-      const part = item as { type?: unknown; reasoning?: unknown; text?: unknown };
-      if (part.type === 'reasoning' && typeof part.reasoning === 'string') {
-        return part.reasoning;
-      }
-      return typeof part.text === 'string' ? part.text : '';
-    })
-    .join('');
-}
-
-function extractAssistantText(payload: any): string {
-  const choice = payload?.choices?.[0];
-  const contentText = extractTextParts(choice?.message?.content);
-  if (contentText) {
-    return contentText;
-  }
-  if (typeof choice?.message?.reasoning === 'string' && choice.message.reasoning.trim()) {
-    return choice.message.reasoning;
-  }
-  return extractReasoningText(choice?.message?.content);
-}
-
-function extractProviderApiError(payload: any): string | null {
-  const baseResp = payload?.base_resp;
-  if (baseResp && typeof baseResp === 'object') {
-    const statusCode = Number(baseResp.status_code);
-    const statusMsg = typeof baseResp.status_msg === 'string' ? baseResp.status_msg.trim() : '';
-    if (Number.isFinite(statusCode) && statusCode !== 0) {
-      return statusMsg ? `API error ${statusCode}: ${statusMsg}` : `API error ${statusCode}`;
-    }
-  }
-
-  const error = payload?.error;
-  if (error && typeof error === 'object') {
-    const message = typeof error.message === 'string' ? error.message.trim() : '';
-    const code = typeof error.code === 'string' || typeof error.code === 'number' ? String(error.code) : '';
-    if (message || code) {
-      return [code ? `API error ${code}` : 'API error', message].filter(Boolean).join(': ');
-    }
-  }
-
-  return null;
-}
-
-function isRetryableProviderApiError(message: string | null | undefined): boolean {
-  const normalized = String(message || '').toLowerCase();
-  return normalized.includes('api error 1000')
-    || normalized.includes('unknown error, 520')
-    || normalized.includes('502')
-    || normalized.includes('503')
-    || normalized.includes('504')
-    || normalized.includes('temporarily unavailable');
-}
-
-function resolveChatCompletionsUrl(baseUrl: string): string {
-  const base = baseUrl.trim().replace(/\/$/, '');
-  if (base.endsWith('/chat/completions')) {
-    return base;
-  }
-  if (base.endsWith('/v1')) {
-    return `${base}/chat/completions`;
-  }
-  return `${base}/v1/chat/completions`;
 }
 
 function looksLikePlannedButUnexecutedToolWork(text: string): boolean {
@@ -397,46 +314,31 @@ async function requestChatCompletion(params: {
   apiKey: string;
   model: string;
   messages: LocalDevChatMessage[];
-}): Promise<string> {
-  const requestUrl = resolveChatCompletionsUrl(params.baseUrl);
+}): Promise<LocalDevTextCompletionResult> {
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    let response: Response;
     try {
-      response = await fetch(requestUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${params.apiKey}`,
-        },
-        body: JSON.stringify({
-          model: params.model,
-          messages: params.messages,
-          stream: false,
-        }),
+      return await requestOpenAICompatibleTextCompletion({
+        baseUrl: params.baseUrl,
+        apiKey: params.apiKey,
+        model: params.model,
+        provider: 'openai-compatible',
+        messages: params.messages,
+        stream: false,
       });
     } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      throw new Error(`Unable to reach local model at ${requestUrl}: ${detail}`);
-    }
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(`chat.completions failed (${response.status}): ${JSON.stringify(payload)}`);
-    }
-    const providerError = extractProviderApiError(payload);
-    if (providerError) {
-      if (attempt < 2 && isRetryableProviderApiError(providerError)) {
+      const retryable = error instanceof ModelProviderCallError ? error.retryable : true;
+      if (attempt < 2 && retryable) {
         await new Promise((resolve) => setTimeout(resolve, RETRYABLE_PROVIDER_ERROR_DELAY_MS * (attempt + 1)));
         continue;
       }
-      throw new Error(providerError);
+      throw error;
     }
-    const text = extractAssistantText(payload);
-    if (!text.trim()) {
-      throw new Error(`LLM response missing text content: ${JSON.stringify(payload)}`);
-    }
-    return text;
   }
   throw new Error('chat.completions exhausted retries without returning assistant text.');
+}
+
+function normalizeCompletionResult(value: string | LocalDevTextCompletionResult): LocalDevTextCompletionResult {
+  return typeof value === 'string' ? { text: value } : value;
 }
 
 export async function runLocalDevToolAgentWithRequester(params: {
@@ -447,7 +349,7 @@ export async function runLocalDevToolAgentWithRequester(params: {
   hooks?: AgentHooks;
   maxSteps?: number;
   forceSummaryOnBudgetExhausted?: boolean;
-}): Promise<{ success: true; result: string } | { success: false; error: string }> {
+}): Promise<{ success: true; result: string; usage?: SessionUsage } | { success: false; error: string; usage?: SessionUsage }> {
   const policy = resolveLocalDevRunPolicy({
     prompt: params.prompt,
     requestedMaxSteps: params.maxSteps,
@@ -463,6 +365,7 @@ export async function runLocalDevToolAgentWithRequester(params: {
     localExplorationCount: 0,
     remoteEvidenceCount: 0,
   };
+  const usageParts: SessionUsage[] = [];
   logLocalDevAgentDebug({
     phase: 'policy',
     isSourceTask: policy.isSourceTask,
@@ -473,7 +376,11 @@ export async function runLocalDevToolAgentWithRequester(params: {
   params.hooks?.onStatus?.('running', `Calling local model ${params.modelLabel}`);
 
   for (let step = 0; step < maxSteps; step += 1) {
-    const assistantText = await params.requestTextCompletion({ messages });
+    const completion = normalizeCompletionResult(await params.requestTextCompletion({ messages }));
+    if (completion.usage) {
+      usageParts.push(completion.usage);
+    }
+    const assistantText = completion.text;
     messages.push({ role: 'assistant', content: assistantText });
 
     const toolCall = extractAndNormalizeLocalDevPrimitiveCall(assistantText, params.cwd);
@@ -506,6 +413,7 @@ export async function runLocalDevToolAgentWithRequester(params: {
       return {
         success: true,
         result: finalText,
+        usage: mergeModelProviderUsage(usageParts),
       };
     }
 
@@ -592,6 +500,7 @@ export async function runLocalDevToolAgentWithRequester(params: {
     return {
       success: false,
       error: `Local tool agent exceeded ${maxSteps} steps and forced-summary fallback is disabled by policy.`,
+      usage: mergeModelProviderUsage(usageParts),
     };
   }
 
@@ -608,7 +517,11 @@ export async function runLocalDevToolAgentWithRequester(params: {
   messages.push({ role: 'user', content: forcedSummaryPrompt });
 
   try {
-    const assistantText = await params.requestTextCompletion({ messages });
+    const completion = normalizeCompletionResult(await params.requestTextCompletion({ messages }));
+    if (completion.usage) {
+      usageParts.push(completion.usage);
+    }
+    const assistantText = completion.text;
     const toolCall = extractAndNormalizeLocalDevPrimitiveCall(assistantText, params.cwd);
     const hasEmbeddedProviderToolCallText = looksLikeEmbeddedProviderToolCallText(assistantText);
     const hasPlannedButUnexecutedToolWork = looksLikePlannedButUnexecutedToolWork(assistantText);
@@ -628,6 +541,7 @@ export async function runLocalDevToolAgentWithRequester(params: {
         return {
           success: true,
           result: finalText,
+          usage: mergeModelProviderUsage(usageParts),
         };
       }
     }
@@ -636,12 +550,14 @@ export async function runLocalDevToolAgentWithRequester(params: {
     return {
       success: false,
       error: `Local tool agent exhausted ${maxSteps} steps and the forced partial-summary pass failed: ${detail}`,
+      usage: mergeModelProviderUsage(usageParts),
     };
   }
 
   return {
     success: false,
     error: `Local tool agent exceeded ${maxSteps} steps and still did not return a usable partial summary.`,
+    usage: mergeModelProviderUsage(usageParts),
   };
 }
 
@@ -654,7 +570,7 @@ export async function runLocalDevToolAgent(params: {
   hooks?: AgentHooks;
   maxSteps?: number;
   forceSummaryOnBudgetExhausted?: boolean;
-}): Promise<{ success: true; result: string } | { success: false; error: string }> {
+}): Promise<{ success: true; result: string; usage?: SessionUsage } | { success: false; error: string; usage?: SessionUsage }> {
   return runLocalDevToolAgentWithRequester({
     modelLabel: params.model,
     requestTextCompletion: ({ messages }) => requestChatCompletion({

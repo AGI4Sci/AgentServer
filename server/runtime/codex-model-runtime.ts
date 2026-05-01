@@ -65,9 +65,38 @@ export function buildCodexCustomProviderConfigArgs(
       `model_provider="${providerId}"`,
       '--config',
       `model_providers.${providerId}={name="AgentServer OpenAI-Compatible Bridge",base_url="${escapedBaseUrl}",wire_api="responses",supports_websockets=false}`,
+      ...buildCodexContextConfigArgs(),
     ],
     modelProvider: providerId,
   };
+}
+
+function buildCodexContextConfigArgs(): string[] {
+  const configArgs: string[] = [];
+  const contextWindow = readPositiveIntEnv('AGENT_SERVER_CODEX_MODEL_CONTEXT_WINDOW');
+  const explicitAutoCompactLimit = readPositiveIntEnv('AGENT_SERVER_CODEX_AUTO_COMPACT_TOKEN_LIMIT');
+  const autoCompactLimit = explicitAutoCompactLimit
+    || (contextWindow ? Math.floor(contextWindow * 0.9) : null);
+  const compactPrompt = trim(process.env.AGENT_SERVER_CODEX_COMPACT_PROMPT);
+
+  if (contextWindow) {
+    configArgs.push('--config', `model_context_window=${contextWindow}`);
+  }
+  if (autoCompactLimit) {
+    configArgs.push('--config', `model_auto_compact_token_limit=${autoCompactLimit}`);
+  }
+  if (compactPrompt) {
+    configArgs.push('--config', `compact_prompt="${escapeTomlBasicString(compactPrompt)}"`);
+  }
+  return configArgs;
+}
+
+function readPositiveIntEnv(name: string): number | null {
+  const raw = Number.parseInt(String(process.env[name] || '').trim(), 10);
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return null;
+  }
+  return Math.floor(raw);
 }
 
 export function resolveCodexRuntimeModelSelection(params: {

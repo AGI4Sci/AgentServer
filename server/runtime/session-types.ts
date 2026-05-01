@@ -74,6 +74,7 @@ export interface RunSessionOptions {
   persistentKey?: string;
   toolMode?: 'auto' | 'none';
   localDevPolicy?: LocalDevPolicyHint;
+  forceNativeRuntime?: boolean;
 }
 
 export type SessionStreamEvent =

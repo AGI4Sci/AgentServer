@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import { appendFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { loadOpenTeamConfig } from '../utils/openteam-config.js';
+import { callOpenAICompatibleChatCompletions } from '../runtime/model-provider-client.js';
 
 type JsonRecord = Record<string, any>;
 
@@ -84,17 +85,6 @@ export function resolveCodexResponsesBridgeUpstreamForModel(model: string | null
     apiKey: resolveUpstreamApiKey(),
     modelName: requestedModel || resolveDefaultModel(),
   };
-}
-
-function resolveChatCompletionsUrl(baseUrl: string): string {
-  const base = baseUrl.trim().replace(/\/$/, '');
-  if (base.endsWith('/chat/completions')) {
-    return base;
-  }
-  if (base.endsWith('/v1')) {
-    return `${base}/chat/completions`;
-  }
-  return `${base}/v1/chat/completions`;
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -803,13 +793,11 @@ export async function handleCodexChatResponsesAdapter(
 
   let upstreamResponse: Response;
   try {
-    upstreamResponse = await fetch(resolveChatCompletionsUrl(upstream.baseUrl), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${upstream.apiKey}`,
-      },
-      body: JSON.stringify(prepared.chatRequest),
+    upstreamResponse = await callOpenAICompatibleChatCompletions({
+      baseUrl: upstream.baseUrl,
+      apiKey: upstream.apiKey,
+      model: prepared.chatRequest.model,
+      body: prepared.chatRequest,
     });
   } catch (error) {
     logAdapterEvent('upstream_fetch_failed', {

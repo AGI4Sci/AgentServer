@@ -13,6 +13,7 @@ import type {
   AutonomousAgentRunResult,
 } from '../server/agent_server/types.ts';
 import { compactAgentServerRunResultForHttp } from '../server/api/agent-server.ts';
+import { containsEmbeddedProviderToolCallText } from '../server/runtime/workers/openai-compatible-stream.ts';
 
 class CapturingAgentServerService extends AgentServerService {
   captured?: AutonomousAgentRunRequest;
@@ -171,6 +172,36 @@ test('runTask preserves explicit context policy overrides', async () => {
   });
 });
 
+test('runTask preserves every public agent backend id instead of normalizing to codex', async () => {
+  const publicBackends = [
+    'codex',
+    'claude-code',
+    'gemini',
+    'openteam_agent',
+    'openclaw',
+    'hermes-agent',
+  ] as const;
+
+  for (const backend of publicBackends) {
+    const service = new CapturingAgentServerService();
+    await service.runTask({
+      agent: {
+        id: `agent-${backend}`,
+        backend,
+        workspace: '/tmp/generic-workspace',
+      },
+      input: {
+        text: 'Use the selected backend',
+      },
+      runtime: {
+        backend,
+      },
+    });
+
+    assert.equal(service.captured?.agent.backend, backend);
+  }
+});
+
 test('OpenAI-compatible request model routes through supervisor tool bridge', () => {
   assert.equal(shouldRouteModelEndpointThroughSupervisor({
     modelProvider: 'qwen',
@@ -269,6 +300,62 @@ test('BioAgent workspace task generation rejects path-only taskFiles without wor
     toolCallCount: 0,
   });
   assert.equal(ok, undefined);
+});
+
+test('workspace-capable stages reject unexecuted backend tool-call markup', () => {
+  assert.equal(containsEmbeddedProviderToolCallText([
+    '<｜DSML｜tool_calls>',
+    '<｜DSML｜invoke name="run_command">',
+    '<｜DSML｜parameter name="command" string="true">ls -la</｜DSML｜parameter>',
+    '</｜DSML｜invoke>',
+    '</｜DSML｜tool_calls>',
+  ].join('\n')), true);
+  assert.equal(containsEmbeddedProviderToolCallText('Here is the completed research report.'), false);
+
+  const violation = detectAgentServerStageContractViolation({
+    handoffPacket: {
+      runId: 'run-dsml',
+      stageId: 'stage-dsml',
+      stageType: 'implement',
+      goal: 'Generate BioAgent task',
+      userRequest: 'Generate BioAgent task',
+      canonicalContext: {
+        goal: 'Generate BioAgent task',
+        plan: [],
+        decisions: [],
+        constraints: [],
+        workspaceState: { root: '/tmp/workspace', dirtyFiles: [] },
+        artifacts: [],
+        backendRunRecords: [],
+        openQuestions: [],
+      },
+      stageInstructions: 'implement',
+      constraints: [],
+      workspaceFacts: { root: '/tmp/workspace', dirtyFiles: [] },
+      priorStageSummaries: [],
+      openQuestions: [],
+      metadata: {
+        input: { purpose: 'workspace-task-generation' },
+        runtime: { requiresNativeWorkspaceCapabilities: true },
+      },
+    },
+    output: {
+      success: true,
+      result: [
+        'Let me check that file.',
+        '<｜DSML｜tool_calls>',
+        '<｜DSML｜invoke name="run_command">',
+        '<｜DSML｜parameter name="command" string="true">ls -la /tmp/workspace</｜DSML｜parameter>',
+        '</｜DSML｜invoke>',
+        '</｜DSML｜tool_calls>',
+      ].join('\n'),
+    },
+    executionPath: 'agent_backend_adapter',
+    filesChanged: [],
+    toolCallCount: 0,
+  });
+
+  assert.match(String(violation), /unexecuted backend tool-call markup/i);
 });
 
 test('HTTP run result compaction omits huge context while preserving output', () => {

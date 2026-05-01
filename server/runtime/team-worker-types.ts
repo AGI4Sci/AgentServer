@@ -157,6 +157,14 @@ export type WorkerEvent =
       error: string;
     } & WorkerEventBase)
   | ({
+      type: 'usage-update';
+      teamId: string;
+      agentId: string;
+      requestId: string;
+      sessionKey: string;
+      usage: SessionUsage;
+    } & WorkerEventBase)
+  | ({
       type: 'result';
       teamId: string;
       agentId: string;

@@ -12,7 +12,7 @@ import {
 } from '../model-spec.js';
 import { resolveHealthyRuntimeBackendConnection } from './runtime-backend-config.js';
 import { toOpenAICompatibleRuntimeEnv } from '../model-runtime-resolver.js';
-import type { SessionOutput } from '../session-types.js';
+import type { SessionOutput, SessionUsage } from '../session-types.js';
 import { formatRuntimeError } from '../session-types.js';
 import { withRuntimeEventProtocol } from '../runtime-event-contract.js';
 import type {
@@ -31,6 +31,7 @@ import {
 } from './openai-compatible-stream.js';
 import { requestDemandsRuntimeToolExecution } from '../shared/runtime-tool-requirements.js';
 import { runSharedRuntimeToolFallback } from '../shared/runtime-tool-fallback.js';
+import { outputWithMergedModelProviderUsage } from '../model-provider-usage.js';
 import {
   buildRuntimeCompletedMessage,
   buildRuntimeRunningMessage,
@@ -349,6 +350,50 @@ function buildPermissionAllowResponse(permissionId: string, toolUseId?: string):
   });
 }
 
+function claudeUsageFromPayload(payload: Record<string, unknown>): SessionUsage | null {
+  const compactMetadata = readRecord(payload.compact_metadata) || readRecord(payload.compactMetadata);
+  const compactPreTokens = readNumber(compactMetadata, 'pre_tokens') || readNumber(compactMetadata, 'preTokens');
+  if (payload.type === 'system' && payload.subtype === 'compact_boundary' && compactPreTokens) {
+    return {
+      input: compactPreTokens,
+      output: 0,
+      total: compactPreTokens,
+      provider: 'claude-code',
+      source: 'estimated',
+    };
+  }
+
+  const usage = readRecord(payload.usage) || readRecord(readRecord(payload.message), 'usage');
+  const totalTokens = readNumber(usage, 'total_tokens') || readNumber(usage, 'totalTokens');
+  const inputTokens = readNumber(usage, 'input_tokens') || readNumber(usage, 'inputTokens') || 0;
+  const outputTokens = readNumber(usage, 'output_tokens') || readNumber(usage, 'outputTokens') || 0;
+  if (totalTokens || inputTokens || outputTokens) {
+    return {
+      input: inputTokens || totalTokens || 0,
+      output: outputTokens,
+      total: totalTokens || inputTokens + outputTokens,
+      provider: 'claude-code',
+      source: totalTokens && !inputTokens && !outputTokens ? 'estimated' : 'model-provider',
+    };
+  }
+  return null;
+}
+
+function readRecord(value: unknown, key?: string): Record<string, unknown> | null {
+  const next = key && value && typeof value === 'object'
+    ? (value as Record<string, unknown>)[key]
+    : value;
+  return next && typeof next === 'object' && !Array.isArray(next) ? next as Record<string, unknown> : null;
+}
+
+function readNumber(value: unknown, key: string): number | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const item = (value as Record<string, unknown>)[key];
+  return typeof item === 'number' && Number.isFinite(item) ? item : null;
+}
+
 export class ClaudeCodeTeamWorker {
   private readonly sessions = new Map<string, AgentRuntimeSession>();
   private readonly idleTtlMs = DEFAULT_IDLE_TTL_MS;
@@ -425,11 +470,13 @@ export class ClaudeCodeTeamWorker {
       onEvent: (event: WorkerEvent) => void;
     },
   ): Promise<SessionOutput> {
-    const forceDirectRuntime = process.env.OPENTEAM_CLAUDE_CODE_FORCE_DIRECT_CHAT_COMPLETIONS === '1';
+    const forceNativeRuntime = request.options.forceNativeRuntime === true
+      || process.env.OPENTEAM_CLAUDE_CODE_FORCE_NATIVE === '1';
+    const forceDirectRuntime = !forceNativeRuntime && process.env.OPENTEAM_CLAUDE_CODE_FORCE_DIRECT_CHAT_COMPLETIONS === '1';
     const useDirectRuntime = forceDirectRuntime
       || (
         shouldUseDirectOpenAICompatibleRuntime(request)
-        && process.env.OPENTEAM_CLAUDE_CODE_FORCE_NATIVE !== '1'
+        && !forceNativeRuntime
       );
     const session = await this.getOrCreateSession(request, !useDirectRuntime);
     if (session.activeRun) {
@@ -783,7 +830,7 @@ export class ClaudeCodeTeamWorker {
       },
     });
     if (output.success && (containsEmbeddedProviderToolCallText(output.result) || containsUnexecutedToolIntentText(output.result))) {
-      return await this.runLocalToolFallback(request, run);
+      return outputWithMergedModelProviderUsage(await this.runLocalToolFallback(request, run), [output.usage]);
     }
     return output;
   }
@@ -840,6 +887,32 @@ export class ClaudeCodeTeamWorker {
     session.lastUsedAt = session.lastEventAt;
     maybeEmitTextDelta(request, run, payload);
     maybeEmitToolCall(request, run, payload);
+    const usage = claudeUsageFromPayload(payload);
+    if (usage) {
+      emitWorkerEvent(request, run, {
+        type: 'usage-update',
+        usage,
+        raw: payload,
+      });
+    }
+
+    if (payload.type === 'system' && payload.subtype === 'compact_boundary') {
+      const compactMetadata = readRecord(payload.compact_metadata) || readRecord(payload.compactMetadata);
+      emitWorkerEvent(request, run, {
+        type: 'status',
+        status: 'completed',
+        message: 'Claude Code native context compaction completed.',
+        raw: payload,
+      });
+      emitWorkerEvent(request, run, {
+        type: 'tool-result',
+        toolName: 'claude_code.compact',
+        detail: typeof compactMetadata?.trigger === 'string' ? `trigger=${compactMetadata.trigger}` : undefined,
+        output: JSON.stringify(compactMetadata || payload),
+        raw: payload,
+      });
+      return;
+    }
 
     if (payload.type === 'status' && typeof payload.status === 'string') {
       const normalizedMessage = payload.status === 'running'
@@ -889,6 +962,15 @@ export class ClaudeCodeTeamWorker {
     }
 
     if (payload.type === 'system' && payload.subtype === 'status' && typeof payload.status === 'string') {
+      if (payload.status === 'compacting') {
+        emitWorkerEvent(request, run, {
+          type: 'status',
+          status: 'running',
+          message: 'Claude Code native context compaction is running.',
+          raw: payload,
+        });
+        return;
+      }
       emitWorkerEvent(request, run, {
         type: 'status',
         status: payload.status === 'waiting' ? 'waiting_permission' : 'running',
@@ -945,6 +1027,7 @@ export class ClaudeCodeTeamWorker {
         settleRun(request, run, {
           success: true,
           result: payload.result,
+          usage: usage || undefined,
         });
         return;
       }

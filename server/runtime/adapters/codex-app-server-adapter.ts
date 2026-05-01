@@ -6,8 +6,12 @@ import type {
   AgentBackendCapabilities,
   AgentBackendEvent,
   BackendReadableState,
+  BackendContextCompactionResult,
+  BackendContextWindowState,
   AbortBackendRunInput,
+  CompactBackendContextInput,
   DisposeBackendSessionInput,
+  ReadBackendContextWindowInput,
   ReadBackendStateInput,
   RunBackendTurnInput,
   StartBackendSessionInput,
@@ -40,6 +44,9 @@ type CodexSessionState = BackendReadableState & {
   runtimeModel?: RuntimeModelInput;
   executionPolicy?: StartBackendSessionInput['executionPolicy'];
   activeTurnId?: string;
+  lastUsage?: SessionUsage;
+  lastContextWindowState?: BackendContextWindowState;
+  lastCompactedAt?: string;
   disposed?: boolean;
 };
 
@@ -70,6 +77,11 @@ const CODEX_APP_SERVER_CAPABILITIES: AgentBackendCapabilities = {
   abortableRun: true,
   resumableSession: true,
   statusTransparency: 'full',
+  contextWindowTelemetry: 'native',
+  nativeCompaction: true,
+  compactionDuringTurn: false,
+  rateLimitTelemetry: true,
+  sessionRotationSafe: true,
 };
 
 const DEFAULT_CODEX_APP_SERVER_RPC_TIMEOUT_MS = 30_000;
@@ -277,6 +289,7 @@ export class CodexAppServerAgentBackendAdapter implements AgentBackendAdapter {
         }
         const notification = next.value;
         state.lastEventAt = nowIso();
+        updateCodexContextStateFromNotification(state, notification, this.options, input.runtimeModel || state.runtimeModel);
         const normalized = normalizeCodexNotification(notification, input.handoff.stageId, toolCalls);
         if (normalized.length > 0 || notification.method === 'turn/completed' || notification.method === 'serverRequest/resolved') {
           lastNativeEventAt = Date.now();
@@ -291,6 +304,20 @@ export class CodexAppServerAgentBackendAdapter implements AgentBackendAdapter {
           }
           if (event.type === 'usage-update') {
             finalUsage = event.usage;
+            state.lastUsage = event.usage;
+            state.lastContextWindowState = buildContextWindowState({
+              sessionRef: state.sessionRef,
+              backend: this.backendId,
+              source: 'native',
+              usage: event.usage,
+              maxTokens: state.lastContextWindowState?.maxTokens || resolveCodexContextWindowFromEnv(),
+              autoCompactTokenLimit: state.lastContextWindowState?.autoCompactTokenLimit || resolveCodexAutoCompactLimitFromEnv(),
+              lastCompactedAt: state.lastCompactedAt,
+              metadata: {
+                ...(state.lastContextWindowState?.metadata || {}),
+                threadId: state.threadId,
+              },
+            });
           }
           if (event.type === 'error') {
             failureReason = event.error;
@@ -397,6 +424,158 @@ export class CodexAppServerAgentBackendAdapter implements AgentBackendAdapter {
       lastEventAt: state.lastEventAt,
       resumable: state.resumable,
       metadata: state.metadata,
+    };
+  }
+
+  async readContextWindowState(input: ReadBackendContextWindowInput): Promise<BackendContextWindowState> {
+    const state = this.requireState(input.sessionRef);
+    if (state.lastContextWindowState) {
+      return {
+        ...state.lastContextWindowState,
+        sessionRef: state.sessionRef,
+        backend: this.backendId,
+      };
+    }
+    return buildContextWindowState({
+      sessionRef: state.sessionRef,
+      backend: this.backendId,
+      source: 'native',
+      usage: state.lastUsage,
+      maxTokens: resolveCodexContextWindowFromEnv(),
+      autoCompactTokenLimit: resolveCodexAutoCompactLimitFromEnv(),
+      lastCompactedAt: state.lastCompactedAt,
+      message: 'Codex native token usage has not been reported for this thread yet.',
+      metadata: {
+        threadId: state.threadId,
+        reason: input.reason,
+      },
+    });
+  }
+
+  async compactContext(input: CompactBackendContextInput): Promise<BackendContextCompactionResult> {
+    const state = this.requireState(input.sessionRef);
+    const startedAt = nowIso();
+    const before = await this.readContextWindowState(input);
+    if (state.activeTurnId || state.activeRunId) {
+      return {
+        sessionRef: state.sessionRef,
+        backend: this.backendId,
+        status: 'skipped',
+        capabilityUsed: 'native',
+        reason: 'Codex thread already has an active turn; native compaction must run while the thread is idle.',
+        before,
+        after: before,
+        startedAt,
+        completedAt: nowIso(),
+        userVisibleSummary: 'Codex 上下文压缩已跳过：当前 thread 正在运行。',
+        auditRefs: [state.threadId],
+      };
+    }
+
+    const queue = new AsyncNotificationQueue();
+    const unsubscribe = state.client.onNotification((message) => queue.push(message));
+    const rpcTimeoutMs = resolveCodexAppServerRpcTimeoutMs(this.options);
+    const turnTimeoutMs = resolveCodexAppServerTurnTimeoutMs(this.options);
+    let sawCompactionItem = false;
+    let sawCompleted = false;
+    let failureReason: string | undefined;
+    const previousStatus = state.status;
+    state.status = 'running';
+    state.lastContextWindowState = {
+      ...before,
+      status: 'compacting',
+      lastUpdatedAt: nowIso(),
+      message: input.reason || 'Codex native context compaction is running.',
+    };
+
+    try {
+      await state.client.request('thread/compact/start', {
+        threadId: state.threadId,
+      }, { timeoutMs: rpcTimeoutMs });
+
+      const deadline = Date.now() + Math.max(1, turnTimeoutMs);
+      while (Date.now() < deadline) {
+        const next = await queue.nextOrTimeout(Math.min(1_000, Math.max(1, deadline - Date.now())));
+        if (!next) {
+          continue;
+        }
+        if (next.done) {
+          break;
+        }
+        const notification = next.value;
+        state.lastEventAt = nowIso();
+        updateCodexContextStateFromNotification(state, notification, this.options, state.runtimeModel);
+        if (notification.method === 'error' && readBoolean(notification.params, 'willRetry') !== true) {
+          failureReason = codexErrorDetail(notification.params) || JSON.stringify(notification.params);
+          break;
+        }
+        const itemType = readString(readObject(notification.params, 'item'), 'type');
+        if (itemType === 'contextCompaction') {
+          sawCompactionItem = true;
+          if (notification.method === 'item/completed') {
+            sawCompleted = true;
+          }
+        }
+        if (notification.method === 'turn/completed') {
+          const turnStatus = readNestedString(notification.params, ['turn', 'status']);
+          if (turnStatus && turnStatus !== 'completed') {
+            failureReason = codexErrorDetail(notification.params) || `Codex compact turn completed with status=${turnStatus}.`;
+          }
+          break;
+        }
+        if (sawCompleted) {
+          break;
+        }
+      }
+      if (!failureReason && !sawCompleted && !sawCompactionItem) {
+        failureReason = 'Codex thread/compact/start completed without contextCompaction progress notifications before timeout.';
+      }
+    } catch (error) {
+      failureReason = error instanceof Error ? error.message : String(error);
+    } finally {
+      unsubscribe();
+      queue.close();
+      state.status = previousStatus === 'disposed' ? 'disposed' : 'idle';
+      state.lastEventAt = nowIso();
+    }
+
+    if (!failureReason) {
+      state.lastCompactedAt = nowIso();
+      state.lastContextWindowState = {
+        ...(state.lastContextWindowState || before),
+        status: 'ok',
+        lastCompactedAt: state.lastCompactedAt,
+        lastUpdatedAt: state.lastCompactedAt,
+        message: 'Codex native context compaction completed.',
+        metadata: {
+          ...(state.lastContextWindowState?.metadata || {}),
+          threadId: state.threadId,
+          compactReason: input.reason,
+        },
+      };
+    } else {
+      state.status = 'failed';
+    }
+    const after = await this.readContextWindowState(input);
+    return {
+      sessionRef: state.sessionRef,
+      backend: this.backendId,
+      status: failureReason ? 'failed' : 'compacted',
+      capabilityUsed: 'native',
+      reason: failureReason,
+      before,
+      after,
+      startedAt,
+      completedAt: nowIso(),
+      userVisibleSummary: failureReason
+        ? `Codex 原生上下文压缩失败：${failureReason}`
+        : 'Codex 原生上下文压缩已完成。',
+      auditRefs: [state.threadId],
+      metadata: {
+        method: 'thread/compact/start',
+        sawCompactionItem,
+        sawCompleted,
+      },
     };
   }
 
@@ -715,6 +894,165 @@ function codexTurnOverrides(options: CodexAppServerAdapterOptions, runtimeModel?
   };
 }
 
+function updateCodexContextStateFromNotification(
+  state: CodexSessionState,
+  notification: JsonRpcMessage,
+  _options: CodexAppServerAdapterOptions,
+  _runtimeModel?: RuntimeModelInput,
+): void {
+  if (notification.method === 'thread/tokenUsage/updated') {
+    const tokenUsage = readObject(notification.params, 'tokenUsage');
+    const total = readObject(tokenUsage, 'total');
+    const last = readObject(tokenUsage, 'last');
+    const usage = normalizeModelProviderUsage(total || last, {
+      provider: readNestedString(notification.params, ['model', 'provider']),
+      model: readNestedString(notification.params, ['model', 'name']),
+    });
+    const contextWindow = readNumber(tokenUsage, 'modelContextWindow')
+      || readNumber(tokenUsage, 'model_context_window')
+      || state.lastContextWindowState?.maxTokens
+      || resolveCodexContextWindowFromEnv();
+    if (usage) {
+      state.lastUsage = usage;
+      state.lastContextWindowState = buildContextWindowState({
+        sessionRef: state.sessionRef,
+        backend: 'codex',
+        source: 'native',
+        usage,
+        maxTokens: contextWindow,
+        autoCompactTokenLimit: state.lastContextWindowState?.autoCompactTokenLimit || resolveCodexAutoCompactLimitFromEnv(),
+        lastCompactedAt: state.lastCompactedAt,
+        metadata: {
+          threadId: state.threadId,
+          turnId: readString(notification.params, 'turnId'),
+        },
+      });
+    }
+    return;
+  }
+  const item = readObject(notification.params, 'item');
+  if (readString(item, 'type') === 'contextCompaction') {
+    if (notification.method === 'item/started') {
+      state.lastContextWindowState = {
+        ...(state.lastContextWindowState || buildContextWindowState({
+          sessionRef: state.sessionRef,
+          backend: 'codex',
+          source: 'native',
+          usage: state.lastUsage,
+          maxTokens: resolveCodexContextWindowFromEnv(),
+          autoCompactTokenLimit: resolveCodexAutoCompactLimitFromEnv(),
+          lastCompactedAt: state.lastCompactedAt,
+          metadata: { threadId: state.threadId },
+        })),
+        status: 'compacting',
+        lastUpdatedAt: nowIso(),
+        message: 'Codex native context compaction started.',
+      };
+    }
+    if (notification.method === 'item/completed') {
+      state.lastCompactedAt = nowIso();
+      state.lastContextWindowState = {
+        ...(state.lastContextWindowState || buildContextWindowState({
+          sessionRef: state.sessionRef,
+          backend: 'codex',
+          source: 'native',
+          usage: state.lastUsage,
+          maxTokens: resolveCodexContextWindowFromEnv(),
+          autoCompactTokenLimit: resolveCodexAutoCompactLimitFromEnv(),
+          lastCompactedAt: state.lastCompactedAt,
+          metadata: { threadId: state.threadId },
+        })),
+        status: 'ok',
+        lastCompactedAt: state.lastCompactedAt,
+        lastUpdatedAt: state.lastCompactedAt,
+        message: 'Codex native context compaction completed.',
+      };
+    }
+  }
+}
+
+function buildContextWindowState(input: {
+  sessionRef: BackendSessionRef;
+  backend: BackendContextWindowState['backend'];
+  source: BackendContextWindowState['source'];
+  usage?: SessionUsage;
+  maxTokens?: number | null;
+  autoCompactTokenLimit?: number | null;
+  lastCompactedAt?: string;
+  message?: string;
+  metadata?: Record<string, unknown>;
+}): BackendContextWindowState {
+  const usedTokens = usageTotal(input.usage);
+  const maxTokens = positiveIntOrUndefined(input.maxTokens);
+  const autoCompactTokenLimit = positiveIntOrUndefined(input.autoCompactTokenLimit);
+  const ratio = usedTokens !== undefined && maxTokens ? clampRatio(usedTokens / maxTokens) : undefined;
+  return {
+    sessionRef: input.sessionRef,
+    backend: input.backend,
+    status: contextStatus(ratio),
+    source: input.source,
+    usedTokens,
+    maxTokens,
+    ratio,
+    autoCompactTokenLimit,
+    lastUsage: input.usage ? { ...input.usage } : undefined,
+    lastUpdatedAt: nowIso(),
+    lastCompactedAt: input.lastCompactedAt,
+    message: input.message,
+    metadata: input.metadata,
+  };
+}
+
+function usageTotal(usage: SessionUsage | undefined): number | undefined {
+  if (!usage) {
+    return undefined;
+  }
+  if (Number.isFinite(usage.total) && usage.total !== undefined) {
+    return Math.max(0, Math.floor(usage.total));
+  }
+  return Math.max(0, Math.floor((usage.input || 0) + (usage.output || 0) + (usage.cacheRead || 0) + (usage.cacheWrite || 0)));
+}
+
+function contextStatus(ratio: number | undefined): BackendContextWindowState['status'] {
+  if (ratio === undefined) {
+    return 'unknown';
+  }
+  if (ratio >= 0.95) {
+    return 'blocked';
+  }
+  if (ratio >= 0.85) {
+    return 'near-limit';
+  }
+  if (ratio >= 0.7) {
+    return 'watch';
+  }
+  return 'ok';
+}
+
+function clampRatio(value: number): number {
+  return Math.max(0, Math.min(1, Number(value.toFixed(4))));
+}
+
+function positiveIntOrUndefined(value: number | null | undefined): number | undefined {
+  if (!Number.isFinite(value || NaN) || !value || value <= 0) {
+    return undefined;
+  }
+  return Math.floor(value);
+}
+
+function resolveCodexContextWindowFromEnv(): number | undefined {
+  return positiveIntOrUndefined(Number.parseInt(String(process.env.AGENT_SERVER_CODEX_MODEL_CONTEXT_WINDOW || ''), 10));
+}
+
+function resolveCodexAutoCompactLimitFromEnv(): number | undefined {
+  const explicit = positiveIntOrUndefined(Number.parseInt(String(process.env.AGENT_SERVER_CODEX_AUTO_COMPACT_TOKEN_LIMIT || ''), 10));
+  if (explicit) {
+    return explicit;
+  }
+  const contextWindow = resolveCodexContextWindowFromEnv();
+  return contextWindow ? Math.floor(contextWindow * 0.9) : undefined;
+}
+
 function codexSandboxPolicy(sandbox: string): Record<string, unknown> {
   if (sandbox === 'danger-full-access') {
     return { type: 'dangerFullAccess' };
@@ -970,6 +1308,14 @@ function readNestedString(value: unknown, path: string[]): string | null {
     current = current[key];
   }
   return typeof current === 'string' ? current : null;
+}
+
+function readNumber(value: unknown, key: string): number | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const item = value[key];
+  return typeof item === 'number' && Number.isFinite(item) ? item : null;
 }
 
 function readObject(value: unknown, key: string): Record<string, unknown> | null {

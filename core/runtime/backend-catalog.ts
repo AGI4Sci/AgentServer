@@ -131,6 +131,12 @@ export function isBackendType(value: unknown): value is BackendType {
   return typeof value === 'string' && BACKEND_IDS.includes(value as BackendType);
 }
 
+export function isAgentBackendId(value: unknown): value is AgentBackendId {
+  return isBackendType(value) || (
+    typeof value === 'string' && STRATEGIC_AGENT_BACKENDS.includes(value as StrategicAgentBackend)
+  );
+}
+
 export function listEnabledBackendIds(): readonly BackendType[] {
   const raw = process.env.AGENT_SERVER_ENABLED_BACKENDS?.trim();
   if (!raw) {
@@ -164,6 +170,10 @@ export function listRegisteredStrategicBackendIds(): BackendType[] {
 
 export function normalizeBackendType(value: unknown, fallback: BackendType = DEFAULT_BACKEND): BackendType {
   return isBackendType(value) ? value : fallback;
+}
+
+export function normalizeAgentBackendId(value: unknown, fallback: AgentBackendId = DEFAULT_BACKEND): AgentBackendId {
+  return isAgentBackendId(value) ? value : fallback;
 }
 
 export function getBackendDescriptor(backend: BackendType): BackendDescriptor {

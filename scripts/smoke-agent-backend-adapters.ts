@@ -20,6 +20,10 @@ const STRATEGIC_BACKENDS: StrategicAgentBackend[] = [
 ];
 const ECOSYSTEM_BACKENDS = ['hermes-agent', 'openclaw'] as const;
 type SmokeBackend = StrategicAgentBackend | (typeof ECOSYSTEM_BACKENDS)[number];
+const DEFAULT_SMOKE_BACKENDS: SmokeBackend[] = [
+  ...STRATEGIC_BACKENDS,
+  ...ECOSYSTEM_BACKENDS,
+];
 const SELECTED_BACKENDS = parseSelectedBackends(process.env.AGENT_SERVER_LIVE_ADAPTER_SMOKE_BACKENDS);
 
 type SmokeResult = {
@@ -198,14 +202,14 @@ if (failed.length > 0) {
 
 function parseSelectedBackends(value: string | undefined): SmokeBackend[] {
   if (!value) {
-    return STRATEGIC_BACKENDS;
+    return DEFAULT_SMOKE_BACKENDS;
   }
   const parsed = value
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean);
   if (parsed.length === 0) {
-    return STRATEGIC_BACKENDS;
+    return DEFAULT_SMOKE_BACKENDS;
   }
   const valid = new Set<string>([...STRATEGIC_BACKENDS, ...ECOSYSTEM_BACKENDS]);
   const invalid = parsed.filter((item) => !valid.has(item));

@@ -7,12 +7,14 @@ import {
   DEFAULT_BACKEND,
   getBackendDescriptor,
   isBackendEnabled,
-  normalizeBackendType,
+  isBackendType,
+  normalizeAgentBackendId,
 } from '../../core/runtime/backend-catalog.js';
-import type { AgentBackendId, BackendType } from '../../core/runtime/backend-catalog.js';
+import type { AgentBackendId } from '../../core/runtime/backend-catalog.js';
 import type { SessionOutput, SessionStreamEvent, SessionUsage } from '../runtime/session-types.js';
 import { mergeModelProviderUsage } from '../runtime/model-provider-usage.js';
 import { runSessionViaSupervisor } from '../runtime/supervisor-session-runner.js';
+import { containsEmbeddedProviderToolCallText } from '../runtime/workers/openai-compatible-stream.js';
 import {
   createAgentBackendAdapter,
   hasAgentBackendAdapter,
@@ -423,7 +425,16 @@ export function detectAgentServerStageContractViolation(input: {
 }): string | undefined {
   if (!input.output.success) return undefined;
   if (!requiresNativeWorkspaceCapability(input.handoffPacket)) return undefined;
-  if (!looksLikePathOnlyTaskFiles(outputTextForContractCheck(input.output))) return undefined;
+  const outputText = outputTextForContractCheck(input.output);
+  if (containsEmbeddedProviderToolCallText(outputText) && input.toolCallCount === 0) {
+    const purpose = bioAgentPurposeFromMetadata(input.handoffPacket.metadata) || 'workspace-capable-task';
+    return [
+      `AgentServer contract violation: ${purpose} returned unexecuted backend tool-call markup.`,
+      'No normalized tool-call/tool-result events were observed, so the stage cannot be treated as completed.',
+      `executionPath=${input.executionPath}`,
+    ].join(' ');
+  }
+  if (!looksLikePathOnlyTaskFiles(outputText)) return undefined;
   if (input.filesChanged.length > 0 || input.toolCallCount > 0) return undefined;
   const purpose = bioAgentPurposeFromMetadata(input.handoffPacket.metadata) || 'workspace-capable-task';
   return [
@@ -946,7 +957,7 @@ export class AgentServerService {
     const manifest: AgentManifest = {
       id,
       name: String(input.name || normalizeNameFromDirectory(workingDirectory)).trim() || id,
-      backend: normalizeBackendType(input.backend, DEFAULT_BACKEND),
+      backend: normalizeAgentBackendId(input.backend, DEFAULT_BACKEND),
       workingDirectory,
       runtimeTeamId: String(input.runtimeTeamId || DEFAULT_RUNTIME_TEAM_ID).trim() || DEFAULT_RUNTIME_TEAM_ID,
       runtimeAgentId: String(input.runtimeAgentId || id).trim() || id,
@@ -1065,8 +1076,8 @@ export class AgentServerService {
       ...(request.runtime?.metadata ? { runtime: request.runtime.metadata } : {}),
       ...(request.agent?.metadata ? { agent: request.agent.metadata } : {}),
     };
-    const backend = normalizeBackendType(request.runtime?.backend ?? request.agent?.backend, DEFAULT_BACKEND);
-    if (!isBackendEnabled(backend)) {
+    const backend = normalizeAgentBackendId(request.runtime?.backend ?? request.agent?.backend, DEFAULT_BACKEND);
+    if (isBackendType(backend) && !isBackendEnabled(backend)) {
       throw new Error(`Backend is disabled by AGENT_SERVER_ENABLED_BACKENDS: ${backend}`);
     }
     const result = await this.runAutonomousTask({
@@ -3348,7 +3359,7 @@ export class AgentServerService {
       shared.push('Avoid claiming high-risk workspace writes are complete unless tool/sandbox capability is explicitly available.');
     } else if (backend === 'openteam_agent') {
       shared.push('Focus on transparent tool/context behavior for self-hosted harness experimentation.');
-    } else if (isBackendEnabled(backend as BackendType) && getBackendDescriptor(backend as BackendType).kind === 'model_provider') {
+    } else if (isBackendType(backend) && isBackendEnabled(backend) && getBackendDescriptor(backend).kind === 'model_provider') {
       shared.push('This is a model-provider fallback path: do not imply native agent loop, sandbox, or native session state.');
       shared.push('Be explicit about capability gaps and return concise structured facts for the next full agent-backend stage.');
     }
@@ -3401,7 +3412,7 @@ export class AgentServerService {
         executionPath: 'legacy_supervisor',
       };
     }
-    if (!isBackendEnabled(input.backend as BackendType)) {
+    if (!isBackendType(input.backend) || !isBackendEnabled(input.backend)) {
       const output: SessionOutput = {
         success: false,
         error: `No agent backend adapter or legacy runtime is registered for backend: ${input.backend}`,
@@ -3736,7 +3747,19 @@ export class AgentServerService {
     executionPath: 'legacy_supervisor';
   }> {
     try {
-      const backend = input.backend as BackendType;
+      if (!isBackendType(input.backend)) {
+        const output: SessionOutput = {
+          success: false,
+          error: `Backend ${input.backend} cannot run through the legacy supervisor runtime.`,
+        };
+        input.emitEvent({ type: 'error', stageId: input.handoffPacket.stageId, error: output.error });
+        input.emitEvent({ type: 'result', output });
+        return {
+          output,
+          executionPath: 'legacy_supervisor',
+        };
+      }
+      const backend = input.backend;
       const output = await runSessionViaSupervisor(
         backend,
         {
@@ -3984,8 +4007,8 @@ export class AgentServerService {
     tier?: 'strategic' | 'experimental' | 'compatibility' | 'legacy';
     resumable: boolean;
   } {
-    if (isBackendEnabled(backend as BackendType)) {
-      const descriptor = getBackendDescriptor(backend as BackendType);
+    if (isBackendType(backend) && isBackendEnabled(backend)) {
+      const descriptor = getBackendDescriptor(backend);
       return {
         kind: descriptor.kind,
         tier: descriptor.tier,
@@ -4378,7 +4401,7 @@ export class AgentServerService {
     }
 
     const desiredName = String(input.name || existing.name || normalizeNameFromDirectory(workingDirectory)).trim() || agentId;
-    const desiredBackend = normalizeBackendType(input.backend, existing.backend);
+    const desiredBackend = normalizeAgentBackendId(input.backend, existing.backend);
     const desiredRuntimeTeamId = String(input.runtimeTeamId || existing.runtimeTeamId || DEFAULT_RUNTIME_TEAM_ID).trim() || DEFAULT_RUNTIME_TEAM_ID;
     const desiredRuntimeAgentId = String(input.runtimeAgentId || existing.runtimeAgentId || agentId).trim() || agentId;
     const desiredSystemPrompt = String(input.systemPrompt || existing.systemPrompt || DEFAULT_SYSTEM_PROMPT).trim();

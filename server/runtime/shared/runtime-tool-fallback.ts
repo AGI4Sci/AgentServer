@@ -100,11 +100,11 @@ export async function runSharedRuntimeToolFallback(params: {
     }
 
     if (output.success) {
-      return { success: true, result: output.result };
+      return { success: true, result: output.result, usage: output.usage };
     }
     failures.push(`${model} @ ${baseUrl}: ${output.error}`);
     if (!shouldTryNextRuntimeEndpoint(output.error)) {
-      return { success: false, error: output.error };
+      return { success: false, error: output.error, usage: output.usage };
     }
   }
 

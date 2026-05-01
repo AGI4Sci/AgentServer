@@ -33,6 +33,11 @@ export interface AgentBackendCapabilities {
   statusTransparency: 'full' | 'partial' | 'opaque';
   multimodalInput?: boolean;
   longContext?: boolean;
+  contextWindowTelemetry?: 'native' | 'provider-usage' | 'agentserver-estimate' | 'none';
+  nativeCompaction?: boolean;
+  compactionDuringTurn?: boolean;
+  rateLimitTelemetry?: boolean;
+  sessionRotationSafe?: boolean;
 }
 
 export interface StartBackendSessionInput {
@@ -69,6 +74,56 @@ export interface ReadBackendStateInput {
 export interface DisposeBackendSessionInput {
   sessionRef: BackendSessionRef;
   reason?: string;
+}
+
+export interface ReadBackendContextWindowInput {
+  sessionRef: BackendSessionRef;
+  reason?: string;
+}
+
+export interface CompactBackendContextInput {
+  sessionRef: BackendSessionRef;
+  reason?: string;
+}
+
+export interface BackendContextWindowState {
+  sessionRef: BackendSessionRef;
+  backend: AgentBackendId;
+  status: 'ok' | 'watch' | 'near-limit' | 'compacting' | 'blocked' | 'unknown';
+  source: 'native' | 'provider-usage' | 'agentserver-estimate' | 'unknown';
+  usedTokens?: number;
+  maxTokens?: number;
+  ratio?: number;
+  autoCompactTokenLimit?: number;
+  lastUsage?: {
+    input?: number;
+    output?: number;
+    total?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    provider?: string;
+    model?: string;
+    source?: 'model-provider' | 'estimated';
+  };
+  lastUpdatedAt: string;
+  lastCompactedAt?: string;
+  message?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface BackendContextCompactionResult {
+  sessionRef: BackendSessionRef;
+  backend: AgentBackendId;
+  status: 'compacted' | 'skipped' | 'failed';
+  capabilityUsed: 'native' | 'agentserver' | 'fallback' | 'none';
+  reason?: string;
+  before?: BackendContextWindowState;
+  after?: BackendContextWindowState;
+  startedAt: string;
+  completedAt: string;
+  userVisibleSummary?: string;
+  auditRefs?: string[];
+  metadata?: Record<string, unknown>;
 }
 
 export interface BackendReadableState {
@@ -115,5 +170,7 @@ export interface AgentBackendAdapter {
   runTurn(input: RunBackendTurnInput): AsyncIterable<AgentBackendEvent>;
   abort(input: AbortBackendRunInput): Promise<void>;
   readState(input: ReadBackendStateInput): Promise<BackendReadableState>;
+  readContextWindowState?(input: ReadBackendContextWindowInput): Promise<BackendContextWindowState>;
+  compactContext?(input: CompactBackendContextInput): Promise<BackendContextCompactionResult>;
   dispose(input: DisposeBackendSessionInput): Promise<void>;
 }
