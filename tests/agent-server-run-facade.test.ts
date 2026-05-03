@@ -224,16 +224,16 @@ test('OpenAI-compatible request model routes through supervisor tool bridge', ()
   }), false);
 });
 
-test('BioAgent workspace task generation rejects path-only taskFiles without workspace evidence', () => {
+test('workspace task generation rejects path-only taskFiles without workspace evidence', () => {
   const violation = detectAgentServerStageContractViolation({
     handoffPacket: {
       runId: 'run-path-only',
       stageId: 'stage-path-only',
       stageType: 'implement',
-      goal: 'Generate BioAgent task',
-      userRequest: 'Generate BioAgent task',
+      goal: 'Generate workspace task',
+      userRequest: 'Generate workspace task',
       canonicalContext: {
-        goal: 'Generate BioAgent task',
+        goal: 'Generate workspace task',
         plan: [],
         decisions: [],
         constraints: [],
@@ -254,7 +254,7 @@ test('BioAgent workspace task generation rejects path-only taskFiles without wor
     },
     output: {
       success: true,
-      result: '```json\n{"taskFiles":[".bioagent/tasks/missing.py"],"entrypoint":".bioagent/tasks/missing.py"}\n```',
+      result: '```json\n{"taskFiles":["workspace/tasks/missing.py"],"entrypoint":"workspace/tasks/missing.py"}\n```',
     },
     executionPath: 'legacy_supervisor',
     filesChanged: [],
@@ -269,10 +269,10 @@ test('BioAgent workspace task generation rejects path-only taskFiles without wor
       runId: 'run-inline',
       stageId: 'stage-inline',
       stageType: 'implement',
-      goal: 'Generate BioAgent task',
-      userRequest: 'Generate BioAgent task',
+      goal: 'Generate workspace task',
+      userRequest: 'Generate workspace task',
       canonicalContext: {
-        goal: 'Generate BioAgent task',
+        goal: 'Generate workspace task',
         plan: [],
         decisions: [],
         constraints: [],
@@ -293,7 +293,7 @@ test('BioAgent workspace task generation rejects path-only taskFiles without wor
     },
     output: {
       success: true,
-      result: '{"taskFiles":[{"path":".bioagent/tasks/task.py","language":"python","content":"print(123456789012345678901234567890)"}],"entrypoint":".bioagent/tasks/task.py"}',
+      result: '{"taskFiles":[{"path":"workspace/tasks/task.py","language":"python","content":"print(123456789012345678901234567890)"}],"entrypoint":"workspace/tasks/task.py"}',
     },
     executionPath: 'agent_backend_adapter',
     filesChanged: [],
@@ -317,10 +317,10 @@ test('workspace-capable stages reject unexecuted backend tool-call markup', () =
       runId: 'run-dsml',
       stageId: 'stage-dsml',
       stageType: 'implement',
-      goal: 'Generate BioAgent task',
-      userRequest: 'Generate BioAgent task',
+      goal: 'Generate workspace task',
+      userRequest: 'Generate workspace task',
       canonicalContext: {
-        goal: 'Generate BioAgent task',
+        goal: 'Generate workspace task',
         plan: [],
         decisions: [],
         constraints: [],

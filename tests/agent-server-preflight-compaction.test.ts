@@ -105,7 +105,7 @@ test('compact failure slims current work and continues with recovery diagnostics
     metadata: {
       repair: true,
       priorAttempts: [{ id: 'attempt-1', status: 'failed' }, { id: 'attempt-2', status: 'failed' }],
-      handoffBudget: { slimmed: true, rawRef: '.bioagent/handoff/raw.json' },
+      handoffBudget: { slimmed: true, rawRef: 'workspace/handoff/raw.json' },
     },
   });
 

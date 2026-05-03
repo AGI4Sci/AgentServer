@@ -382,7 +382,7 @@ function metadataString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-function bioAgentPurposeFromMetadata(metadata: unknown): string {
+function workspacePurposeFromMetadata(metadata: unknown): string {
   const root = metadataRecord(metadata);
   const input = metadataRecord(root.input);
   const runtime = metadataRecord(root.runtime);
@@ -395,7 +395,7 @@ function bioAgentPurposeFromMetadata(metadata: unknown): string {
 function requiresNativeWorkspaceCapability(handoffPacket: BackendHandoffPacket): boolean {
   const metadata = metadataRecord(handoffPacket.metadata);
   const runtime = metadataRecord(metadata.runtime);
-  const purpose = bioAgentPurposeFromMetadata(metadata);
+  const purpose = workspacePurposeFromMetadata(metadata);
   if (runtime.requiresNativeWorkspaceCapabilities === true) return true;
   if (runtime.requiresWorkspaceExecution === true) return true;
   return purpose === 'workspace-task-generation'
@@ -413,12 +413,12 @@ function outputTextForContractCheck(output: SessionOutput): string {
 }
 
 function looksLikePathOnlyTaskFiles(text: string): boolean {
-  if (!/taskFiles|entrypoint|\.bioagent\/tasks\//i.test(text)) return false;
+  if (!/taskFiles|entrypoint/i.test(text)) return false;
   const hasInlineContent = /"content"\s*:\s*"(?:\\.|[^"\\]){24,}"/s.test(text)
-    || /```(?:python|py|r|sh|bash)\s*\n[\s\S]*?\.bioagent\/tasks\//i.test(text);
+    || /```(?:python|py|r|sh|bash)\s*\n[\s\S]*?```/i.test(text);
   if (hasInlineContent) return false;
-  return /"taskFiles"\s*:\s*\[\s*"[^"]*\.bioagent\/tasks\//is.test(text)
-    || /"taskFiles"\s*:\s*\[\s*\{(?:(?!"content").)*"path"\s*:\s*"[^"]*\.bioagent\/tasks\//is.test(text);
+  return /"taskFiles"\s*:\s*\[\s*"[^"]+"/is.test(text)
+    || /"taskFiles"\s*:\s*\[\s*\{(?:(?!"content").)*"path"\s*:\s*"[^"]+"/is.test(text);
 }
 
 export function detectAgentServerStageContractViolation(input: {
@@ -432,7 +432,7 @@ export function detectAgentServerStageContractViolation(input: {
   if (!requiresNativeWorkspaceCapability(input.handoffPacket)) return undefined;
   const outputText = outputTextForContractCheck(input.output);
   if (containsEmbeddedProviderToolCallText(outputText) && input.toolCallCount === 0) {
-    const purpose = bioAgentPurposeFromMetadata(input.handoffPacket.metadata) || 'workspace-capable-task';
+    const purpose = workspacePurposeFromMetadata(input.handoffPacket.metadata) || 'workspace-capable-task';
     return [
       `AgentServer contract violation: ${purpose} returned unexecuted backend tool-call markup.`,
       'No normalized tool-call/tool-result events were observed, so the stage cannot be treated as completed.',
@@ -441,7 +441,7 @@ export function detectAgentServerStageContractViolation(input: {
   }
   if (!looksLikePathOnlyTaskFiles(outputText)) return undefined;
   if (input.filesChanged.length > 0 || input.toolCallCount > 0) return undefined;
-  const purpose = bioAgentPurposeFromMetadata(input.handoffPacket.metadata) || 'workspace-capable-task';
+  const purpose = workspacePurposeFromMetadata(input.handoffPacket.metadata) || 'workspace-capable-task';
   return [
     `AgentServer contract violation: ${purpose} returned path-only taskFiles without inline content.`,
     'No workspace file changes or tool calls were observed, so the stage cannot be treated as completed.',
