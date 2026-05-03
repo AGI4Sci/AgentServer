@@ -880,6 +880,7 @@ export interface AgentMessageRequest {
   modelProvider?: RuntimeModelInput['modelProvider'];
   modelName?: RuntimeModelInput['modelName'];
   llmEndpoint?: RuntimeModelInput['llmEndpoint'];
+  maxContextWindowTokens?: number;
   localDevPolicy?: LocalDevPolicyHint;
   contextPolicy?: AgentMessageContextPolicy;
   metadata?: Record<string, unknown>;

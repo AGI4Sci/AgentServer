@@ -305,17 +305,20 @@ export class CodexAppServerAgentBackendAdapter implements AgentBackendAdapter {
           if (event.type === 'usage-update') {
             finalUsage = event.usage;
             state.lastUsage = event.usage;
+            const existingContextWindowState = state.lastContextWindowState;
+            const contextUsage = sessionUsageFromContextWindowState(existingContextWindowState?.lastUsage) || event.usage;
             state.lastContextWindowState = buildContextWindowState({
               sessionRef: state.sessionRef,
               backend: this.backendId,
               source: 'native',
-              usage: event.usage,
-              maxTokens: state.lastContextWindowState?.maxTokens || resolveCodexContextWindowFromEnv(),
-              autoCompactTokenLimit: state.lastContextWindowState?.autoCompactTokenLimit || resolveCodexAutoCompactLimitFromEnv(),
+              usage: contextUsage,
+              maxTokens: existingContextWindowState?.maxTokens || resolveCodexContextWindowFromEnv(),
+              autoCompactTokenLimit: existingContextWindowState?.autoCompactTokenLimit || resolveCodexAutoCompactLimitFromEnv(),
               lastCompactedAt: state.lastCompactedAt,
               metadata: {
-                ...(state.lastContextWindowState?.metadata || {}),
+                ...(existingContextWindowState?.metadata || {}),
                 threadId: state.threadId,
+                cumulativeUsage: event.usage,
               },
             });
           }
@@ -908,6 +911,10 @@ function updateCodexContextStateFromNotification(
       provider: readNestedString(notification.params, ['model', 'provider']),
       model: readNestedString(notification.params, ['model', 'name']),
     });
+    const currentWindowUsage = normalizeModelProviderUsage(last || total, {
+      provider: readNestedString(notification.params, ['model', 'provider']),
+      model: readNestedString(notification.params, ['model', 'name']),
+    });
     const contextWindow = readNumber(tokenUsage, 'modelContextWindow')
       || readNumber(tokenUsage, 'model_context_window')
       || state.lastContextWindowState?.maxTokens
@@ -918,13 +925,15 @@ function updateCodexContextStateFromNotification(
         sessionRef: state.sessionRef,
         backend: 'codex',
         source: 'native',
-        usage,
+        usage: currentWindowUsage || usage,
         maxTokens: contextWindow,
         autoCompactTokenLimit: state.lastContextWindowState?.autoCompactTokenLimit || resolveCodexAutoCompactLimitFromEnv(),
         lastCompactedAt: state.lastCompactedAt,
         metadata: {
           threadId: state.threadId,
           turnId: readString(notification.params, 'turnId'),
+          cumulativeUsage: usage,
+          contextUsageScope: currentWindowUsage ? 'last' : 'total',
         },
       });
     }
@@ -1011,6 +1020,22 @@ function usageTotal(usage: SessionUsage | undefined): number | undefined {
     return Math.max(0, Math.floor(usage.total));
   }
   return Math.max(0, Math.floor((usage.input || 0) + (usage.output || 0) + (usage.cacheRead || 0) + (usage.cacheWrite || 0)));
+}
+
+function sessionUsageFromContextWindowState(usage: BackendContextWindowState['lastUsage'] | undefined): SessionUsage | undefined {
+  if (!usage) {
+    return undefined;
+  }
+  return {
+    input: usage.input || 0,
+    output: usage.output || 0,
+    ...(usage.total !== undefined ? { total: usage.total } : {}),
+    ...(usage.cacheRead !== undefined ? { cacheRead: usage.cacheRead } : {}),
+    ...(usage.cacheWrite !== undefined ? { cacheWrite: usage.cacheWrite } : {}),
+    ...(usage.provider ? { provider: usage.provider } : {}),
+    ...(usage.model ? { model: usage.model } : {}),
+    ...(usage.source ? { source: usage.source } : {}),
+  };
 }
 
 function contextStatus(ratio: number | undefined): BackendContextWindowState['status'] {

@@ -84,9 +84,9 @@ rl.on('line', (line) => {
             reasoningOutputTokens: 0,
           },
           last: {
-            inputTokens: 123,
-            outputTokens: 45,
-            totalTokens: 168,
+            inputTokens: 20,
+            outputTokens: 8,
+            totalTokens: 28,
             cachedInputTokens: 7,
             reasoningOutputTokens: 0,
           },
@@ -159,6 +159,10 @@ rl.on('line', (line) => {
   })) {
     events.push(event);
   }
+  const contextWindowState = await adapter.readContextWindowState({
+    sessionRef,
+    reason: 'test current context telemetry',
+  });
   await adapter.dispose({ sessionRef });
 
   const stageResult = events.find((event) => event.type === 'stage-result');
@@ -167,6 +171,9 @@ rl.on('line', (line) => {
   assert.equal(usageEvent?.usage.output, 45);
   assert.equal(usageEvent?.usage.cacheRead, 7);
   assert.equal(usageEvent?.usage.source, 'model-provider');
+  assert.equal(contextWindowState.usedTokens, 28);
+  assert.equal(contextWindowState.metadata?.contextUsageScope, 'last');
+  assert.deepEqual(contextWindowState.metadata?.cumulativeUsage, usageEvent?.usage);
   assert.equal(stageResult?.result.status, 'completed');
   assert.equal(stageResult?.result.finalText, 'policy-ok');
   assert.equal(stageResult?.result.usage?.input, 123);

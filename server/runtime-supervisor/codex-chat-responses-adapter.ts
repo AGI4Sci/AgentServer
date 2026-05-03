@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'http';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { appendFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { loadOpenTeamConfig } from '../utils/openteam-config.js';
@@ -38,6 +38,23 @@ const MAX_STORED_CONVERSATIONS = Math.max(
   loadOpenTeamConfig().runtime.codex.responseStoreLimit,
 );
 const ADAPTER_LOG_PATH = join(process.cwd(), 'tmp', 'codex-chat-responses-adapter.log');
+const CHARS_PER_TOKEN_ESTIMATE = 4;
+const MAX_TOOL_OUTPUT_PROMPT_CHARS = readPositiveIntEnv(
+  'AGENT_SERVER_CODEX_RESPONSES_BRIDGE_MAX_TOOL_OUTPUT_PROMPT_CHARS',
+  12_000,
+);
+const MAX_STORED_TEXT_CHARS = readPositiveIntEnv(
+  'AGENT_SERVER_CODEX_RESPONSES_BRIDGE_MAX_STORED_TEXT_CHARS',
+  16_000,
+);
+const MAX_STORED_TOOL_OUTPUT_CHARS = readPositiveIntEnv(
+  'AGENT_SERVER_CODEX_RESPONSES_BRIDGE_MAX_STORED_TOOL_OUTPUT_CHARS',
+  8_000,
+);
+const MAX_STORED_CONVERSATION_CHARS = readPositiveIntEnv(
+  'AGENT_SERVER_CODEX_RESPONSES_BRIDGE_MAX_STORED_CONVERSATION_CHARS',
+  120_000,
+);
 
 function resolveUpstreamBaseUrl(): string | null {
   return loadOpenTeamConfig().llm.baseUrl;
@@ -127,6 +144,168 @@ function logAdapterEvent(label: string, payload: JsonRecord): void {
 
 function cloneMessages(messages: JsonRecord[]): JsonRecord[] {
   return messages.map((message) => JSON.parse(JSON.stringify(message)) as JsonRecord);
+}
+
+function readPositiveIntEnv(name: string, fallback: number): number {
+  const parsed = Number.parseInt(String(process.env[name] || ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function textDigest(text: string): string {
+  return createHash('sha256').update(text).digest('hex').slice(0, 16);
+}
+
+function isBinaryDataUrl(text: string): boolean {
+  return /^data:[^,;]+;base64,/i.test(text);
+}
+
+function compactLongText(text: string, maxChars: number, label: string): string {
+  if (!text) {
+    return text;
+  }
+  const binaryDataUrl = isBinaryDataUrl(text);
+  if (!binaryDataUrl && text.length <= maxChars) {
+    return text;
+  }
+  const digest = textDigest(text);
+  if (binaryDataUrl) {
+    const mediaType = text.slice(5, text.indexOf(';base64,')).slice(0, 120) || 'unknown';
+    return `[AgentServer compacted ${label}: binary data URL omitted; media_type=${mediaType}; original_chars=${text.length}; sha256=${digest}]`;
+  }
+  const headChars = Math.min(2400, Math.max(400, Math.floor(maxChars * 0.38)));
+  const tailChars = Math.min(1800, Math.max(200, Math.floor(maxChars * 0.25)));
+  return [
+    `[AgentServer compacted ${label}: original_chars=${text.length}; sha256=${digest}; retained=head+tail]`,
+    text.slice(0, headChars),
+    `[AgentServer omitted ${Math.max(0, text.length - headChars - tailChars)} chars from ${label}]`,
+    text.slice(-tailChars),
+    `[end compacted ${label}]`,
+  ].join('\n');
+}
+
+function compactToolOutputForPrompt(output: unknown): string {
+  return compactLongText(
+    stringifyToolOutput(output),
+    MAX_TOOL_OUTPUT_PROMPT_CHARS,
+    'tool output for prompt',
+  );
+}
+
+function compactToolOutputForConversation(output: unknown): string {
+  return compactLongText(
+    stringifyToolOutput(output),
+    MAX_STORED_TOOL_OUTPUT_CHARS,
+    'stored tool output',
+  );
+}
+
+function compactContentForConversation(content: unknown, label: string): unknown {
+  if (typeof content === 'string') {
+    return compactLongText(content, MAX_STORED_TEXT_CHARS, label);
+  }
+  if (!Array.isArray(content)) {
+    return content;
+  }
+  return content.map((item, index) => {
+    if (!item || typeof item !== 'object') {
+      return item;
+    }
+    const record = JSON.parse(JSON.stringify(item)) as JsonRecord;
+    if (typeof record.text === 'string') {
+      record.text = compactLongText(record.text, MAX_STORED_TEXT_CHARS, `${label} part ${index}`);
+    }
+    const imageUrl = record.image_url;
+    if (typeof imageUrl === 'string' && isBinaryDataUrl(imageUrl)) {
+      return {
+        type: 'text',
+        text: compactLongText(imageUrl, MAX_STORED_TEXT_CHARS, `${label} image data`),
+      };
+    }
+    if (imageUrl && typeof imageUrl === 'object') {
+      const imageRecord = imageUrl as JsonRecord;
+      if (typeof imageRecord.url === 'string' && isBinaryDataUrl(imageRecord.url)) {
+        return {
+          type: 'text',
+          text: compactLongText(imageRecord.url, MAX_STORED_TEXT_CHARS, `${label} image data`),
+        };
+      }
+    }
+    return record;
+  });
+}
+
+function compactToolCallsForConversation(toolCalls: unknown): unknown {
+  if (!Array.isArray(toolCalls)) {
+    return toolCalls;
+  }
+  return toolCalls.map((toolCall) => {
+    if (!toolCall || typeof toolCall !== 'object') {
+      return toolCall;
+    }
+    const record = JSON.parse(JSON.stringify(toolCall)) as JsonRecord;
+    const fn = record.function && typeof record.function === 'object' ? record.function as JsonRecord : null;
+    if (fn && typeof fn.arguments === 'string') {
+      fn.arguments = compactLongText(fn.arguments, MAX_STORED_TEXT_CHARS, 'stored tool call arguments');
+    }
+    return record;
+  });
+}
+
+function approximateJsonChars(value: unknown): number {
+  try {
+    return JSON.stringify(value).length;
+  } catch {
+    return String(value).length;
+  }
+}
+
+function compactMessageForConversation(message: JsonRecord): JsonRecord {
+  const compacted = JSON.parse(JSON.stringify(message)) as JsonRecord;
+  compacted.content = compactContentForConversation(
+    compacted.content,
+    `stored ${typeof compacted.role === 'string' ? compacted.role : 'message'} content`,
+  );
+  if (compacted.tool_calls !== undefined) {
+    compacted.tool_calls = compactToolCallsForConversation(compacted.tool_calls);
+  }
+  return compacted;
+}
+
+function compactMessageToReference(message: JsonRecord, index: number): JsonRecord {
+  const digest = textDigest(JSON.stringify(message));
+  const role = typeof message.role === 'string' ? message.role : 'message';
+  const compacted = JSON.parse(JSON.stringify(message)) as JsonRecord;
+  compacted.content = `[AgentServer compacted older ${role} message: index=${index}; original_chars=${approximateJsonChars(message)}; sha256=${digest}]`;
+  if (compacted.tool_calls !== undefined) {
+    compacted.tool_calls = compactToolCallsForConversation(compacted.tool_calls);
+  }
+  return compacted;
+}
+
+function compactMessagesForConversation(messages: JsonRecord[]): JsonRecord[] {
+  const compacted = cloneMessages(messages).map(compactMessageForConversation);
+  let totalChars = approximateJsonChars(compacted);
+  if (totalChars <= MAX_STORED_CONVERSATION_CHARS) {
+    return compacted;
+  }
+
+  for (let index = 0; index < compacted.length && totalChars > MAX_STORED_CONVERSATION_CHARS; index += 1) {
+    if (index === 0 && compacted[index]?.role === 'system') {
+      continue;
+    }
+    const before = approximateJsonChars(compacted[index]);
+    const referenced = compactMessageToReference(compacted[index], index);
+    const after = approximateJsonChars(referenced);
+    if (after < before) {
+      compacted[index] = referenced;
+      totalChars -= before - after;
+    }
+  }
+  return compacted;
+}
+
+function estimateMessagesTokens(messages: JsonRecord[]): number {
+  return Math.max(1, Math.ceil(approximateJsonChars(messages) / CHARS_PER_TOKEN_ESTIMATE));
 }
 
 function stringifyToolOutput(output: unknown): string {
@@ -264,7 +443,7 @@ function appendInputItems(messages: JsonRecord[], input: unknown): void {
       messages.push({
         role: 'tool',
         tool_call_id: typeof record.call_id === 'string' ? record.call_id : randomUUID(),
-        content: stringifyToolOutput(record.output ?? record.tools ?? ''),
+        content: compactToolOutputForPrompt(record.output ?? record.tools ?? ''),
       });
     }
   }
@@ -274,7 +453,7 @@ export function buildChatCompletionsRequest(
   requestBody: JsonRecord,
   previousConversation?: StoredConversation | null,
 ): PreparedChatRequest {
-  const messages = previousConversation ? cloneMessages(previousConversation.messages) : [];
+  const messages = previousConversation ? compactMessagesForConversation(previousConversation.messages) : [];
   const instructions = typeof requestBody.instructions === 'string' ? requestBody.instructions.trim() : '';
   if (instructions) {
     if (messages[0]?.role === 'system') {
@@ -361,13 +540,31 @@ function normalizeChatToolCalls(toolCalls: unknown): JsonRecord[] {
     .filter((toolCall) => toolCall !== null) as JsonRecord[];
 }
 
-function buildResponseUsage(chatUsage: JsonRecord | undefined): JsonRecord | undefined {
+function buildResponseUsage(chatUsage: JsonRecord | undefined, messages?: JsonRecord[]): JsonRecord | undefined {
+  const estimatedContextWindowTokens = messages ? estimateMessagesTokens(messages) : undefined;
   if (!chatUsage || typeof chatUsage !== 'object') {
-    return undefined;
+    return estimatedContextWindowTokens
+      ? {
+          input_tokens: estimatedContextWindowTokens,
+          input_tokens_details: {
+            cached_tokens: 0,
+          },
+          output_tokens: 0,
+          output_tokens_details: {
+            reasoning_tokens: 0,
+          },
+          total_tokens: estimatedContextWindowTokens,
+          context_window_tokens: estimatedContextWindowTokens,
+          current_context_window_tokens: estimatedContextWindowTokens,
+          context_window_source: 'agentserver-estimate',
+          usage_kind: 'per_request_estimate',
+        }
+      : undefined;
   }
   const promptTokens = Number(chatUsage.prompt_tokens) || 0;
   const completionTokens = Number(chatUsage.completion_tokens) || 0;
   const totalTokens = Number(chatUsage.total_tokens) || (promptTokens + completionTokens);
+  const contextWindowTokens = promptTokens || estimatedContextWindowTokens;
   return {
     input_tokens: promptTokens,
     input_tokens_details: {
@@ -378,6 +575,12 @@ function buildResponseUsage(chatUsage: JsonRecord | undefined): JsonRecord | und
       reasoning_tokens: 0,
     },
     total_tokens: totalTokens,
+    ...(contextWindowTokens ? {
+      context_window_tokens: contextWindowTokens,
+      current_context_window_tokens: contextWindowTokens,
+      context_window_source: promptTokens ? 'provider-prompt-tokens' : 'agentserver-estimate',
+      usage_kind: 'per_request',
+    } : {}),
   };
 }
 
@@ -468,7 +671,7 @@ export function buildSyntheticResponsesFromChatCompletion(
         id: responseId,
         model: typeof chatPayload.model === 'string' ? chatPayload.model : prepared.chatRequest.model,
         status: 'completed',
-        usage: buildResponseUsage(chatPayload.usage),
+        usage: buildResponseUsage(chatPayload.usage, prepared.messages),
       },
     },
   });
@@ -484,10 +687,10 @@ export function buildSyntheticResponsesFromChatCompletion(
   const storedConversation: StoredConversation = {
     id: responseId,
     createdAt: Date.now(),
-    messages: [
+    messages: compactMessagesForConversation([
       ...cloneMessages(prepared.messages),
       assistantHistoryMessage,
-    ],
+    ]),
   };
 
   return {
@@ -665,7 +868,9 @@ async function handleStreamingChatCompletionResponse(
       return;
     }
     if (typeof chunk.model === 'string') responseModel = chunk.model;
-    if (chunk.usage && typeof chunk.usage === 'object') usage = buildResponseUsage(chunk.usage as JsonRecord);
+    if (chunk.usage && typeof chunk.usage === 'object') {
+      usage = buildResponseUsage(chunk.usage as JsonRecord, prepared.messages);
+    }
     const choice = Array.isArray(chunk.choices) ? chunk.choices[0] as JsonRecord | undefined : undefined;
     const delta = choice?.delta && typeof choice.delta === 'object' ? choice.delta as JsonRecord : {};
     if (typeof delta.content === 'string') emitText(delta.content);
@@ -706,7 +911,7 @@ async function handleStreamingChatCompletionResponse(
     const event = toolCallDoneEvent(toolCall);
     writeSse(res, event.event, event.data);
   }
-  const completed = responseCompletedEvent(responseId, responseModel, usage);
+  const completed = responseCompletedEvent(responseId, responseModel, usage ?? buildResponseUsage(undefined, prepared.messages));
   writeSse(res, completed.event, completed.data);
 
   const assistantHistoryMessage: JsonRecord = {
@@ -718,10 +923,10 @@ async function handleStreamingChatCompletionResponse(
   conversationStore.set(responseId, {
     id: responseId,
     createdAt: Date.now(),
-    messages: [
+    messages: compactMessagesForConversation([
       ...cloneMessages(prepared.messages),
       assistantHistoryMessage,
-    ],
+    ]),
   });
   pruneConversationStore();
 }

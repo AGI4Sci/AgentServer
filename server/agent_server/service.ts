@@ -153,7 +153,7 @@ const DEFAULT_AUTONOMOUS_AGENT_POLICY = {
   clearCurrentWorkOnReset: false,
   resumeAutonomyAfterRecovery: false,
 } as const;
-const APPROX_CONTEXT_TOKENS = 20_000;
+const DEFAULT_APPROX_CONTEXT_TOKENS = resolveConfiguredApproxContextTokens(process.env.AGENT_SERVER_APPROX_CONTEXT_TOKENS);
 const WORK_RATIO_SOFT_THRESHOLD = 0.6;
 const WORK_RATIO_HARD_THRESHOLD = 0.85;
 const PREFLIGHT_CONTEXT_COMPACT_TOKEN_THRESHOLD = 4_000;
@@ -576,6 +576,44 @@ function contextWindowStatusFromWorkBudget(status: AgentWorkBudgetSnapshot['stat
   if (status === 'hard_threshold_reached') return 'near-limit';
   if (status === 'soft_threshold_reached') return 'watch';
   return 'ok';
+}
+
+function resolveConfiguredApproxContextTokens(raw: string | undefined): number {
+  const parsed = Number.parseInt(raw || '', 10);
+  if (!Number.isFinite(parsed)) return 20_000;
+  return clampContextWindowTokens(parsed) ?? 20_000;
+}
+
+function clampContextWindowTokens(value: number): number | undefined {
+  if (!Number.isFinite(value)) return undefined;
+  return Math.max(1_000, Math.min(2_000_000, Math.floor(value)));
+}
+
+function finiteContextWindowTokens(value: unknown): number | undefined {
+  if (typeof value === 'number') return clampContextWindowTokens(value);
+  if (typeof value !== 'string' || !value.trim()) return undefined;
+  const parsed = Number.parseInt(value, 10);
+  return clampContextWindowTokens(parsed);
+}
+
+function findContextWindowTokenLimit(value: unknown, depth = 0): number | undefined {
+  if (depth > 5 || value == null || typeof value !== 'object') return undefined;
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    if (/^(maxContextWindowTokens|contextWindowLimit|modelContextWindow|max_context_window_tokens|context_window_limit|model_context_window)$/i.test(key)) {
+      const tokens = finiteContextWindowTokens(item);
+      if (tokens !== undefined) return tokens;
+    }
+  }
+  for (const item of Object.values(value as Record<string, unknown>)) {
+    const tokens = findContextWindowTokenLimit(item, depth + 1);
+    if (tokens !== undefined) return tokens;
+  }
+  return undefined;
+}
+
+function resolveRequestContextWindowTokens(request?: AgentMessageRequest): number | undefined {
+  return finiteContextWindowTokens(request?.maxContextWindowTokens)
+    ?? findContextWindowTokenLimit(request?.metadata);
 }
 
 function inferArtifactKind(path: string): string {
@@ -1147,6 +1185,7 @@ export class AgentServerService {
         modelProvider: request.runtime?.modelProvider,
         modelName: request.runtime?.modelName,
         llmEndpoint: request.runtime?.llmEndpoint,
+        maxContextWindowTokens: findContextWindowTokenLimit(metadata),
         localDevPolicy: request.runtime?.localDevPolicy,
         contextPolicy: request.contextPolicy ?? DEFAULT_RUN_TASK_CONTEXT_POLICY,
         metadata,
@@ -1404,13 +1443,15 @@ export class AgentServerService {
     return await this.getContextSnapshot(agentId);
   }
 
-  async getContextSnapshot(agentId: string): Promise<AgentContextSnapshot> {
+  async getContextSnapshot(agentId: string, options: { allowPersistentBudgetExceeded?: boolean; maxContextTokens?: number } = {}): Promise<AgentContextSnapshot> {
     const agent = await this.getAgent(agentId);
     const session = await this.store.getActiveSession(agentId);
     if (!session) {
       throw new Error(`Active session not found for agent: ${agentId}`);
     }
-    await this.assertPersistentBudget(agent, session);
+    if (!options.allowPersistentBudgetExceeded) {
+      await this.assertPersistentBudget(agent, session);
+    }
     const memorySummaryEntries = await this.store.listMemorySummary(agentId);
     const memoryConstraintEntries = await this.store.listMemoryConstraints(agentId);
     const memoryBudget = this.computeMemoryBudgetSnapshot(
@@ -1434,6 +1475,7 @@ export class AgentServerService {
       persistentSummaryEntries,
       persistentConstraintEntries,
       currentWorkEntries,
+      options.maxContextTokens,
     );
     const pendingGoals = await this.store.listPendingGoals(agentId);
     const pendingClarification = await this.getPendingClarification(agentId);
@@ -2876,8 +2918,11 @@ export class AgentServerService {
       throw new Error('message is required');
     }
     let contextPolicy = resolveAgentMessageContextPolicy(request.contextPolicy);
+    const requestedContextWindowTokens = resolveRequestContextWindowTokens(request);
 
-    let contextSnapshot = await this.getContextSnapshot(agentId);
+    let contextSnapshot = await this.getContextSnapshot(agentId, {
+      maxContextTokens: requestedContextWindowTokens,
+    });
     const { agent } = contextSnapshot;
     const session = await this.store.getActiveSession(agent.id);
     if (!session) {
@@ -4864,9 +4909,11 @@ export class AgentServerService {
     const currentWork = await this.store.listCurrentWork(agent.id, session.id);
     const turns = currentWork.filter(normalizeWorkEntryTurn);
     if (turns.length < 2) {
-      return null;
+      return [...currentWork].reverse().find((entry): entry is AgentCompactionTagRecord =>
+        entry.kind === 'compaction' || entry.kind === 'partial_compaction'
+      ) ?? null;
     }
-    const contextSnapshot = await this.getContextSnapshot(agent.id);
+    const contextSnapshot = await this.getContextSnapshot(agent.id, { allowPersistentBudgetExceeded: true });
     const workBudget = contextSnapshot.workBudget;
     const workRatio = workBudget.workRatio;
     const runs = await this.store.listRuns(agent.id, session.id);
@@ -5032,7 +5079,9 @@ export class AgentServerService {
     persistentSummaryEntries: string[],
     persistentConstraintEntries: AgentConstraintRecord[],
     currentWorkEntries: AgentWorkEntry[],
+    maxContextTokens?: number,
   ): AgentWorkBudgetSnapshot {
+    const approxContextTokens = maxContextTokens ?? DEFAULT_APPROX_CONTEXT_TOKENS;
     const approxPrefixTokens = approxTokens([
       systemPrompt,
       memorySummaryEntries.join('\n'),
@@ -5041,7 +5090,7 @@ export class AgentServerService {
       persistentConstraintEntries.map((entry) => `${entry.key}:${entry.desc}`).join('\n'),
     ].join('\n'));
     const approxCurrentWorkTokens = approxTokens(JSON.stringify(currentWorkEntries));
-    const approxRemainingTokens = Math.max(1, APPROX_CONTEXT_TOKENS - approxPrefixTokens);
+    const approxRemainingTokens = Math.max(1, approxContextTokens - approxPrefixTokens);
     const workRatio = approxCurrentWorkTokens / approxRemainingTokens;
     const tokenEconomics = this.computeWorkTokenEconomics(
       approxPrefixTokens,
@@ -5061,7 +5110,7 @@ export class AgentServerService {
           : 'current work remains below the soft compaction threshold',
     ];
     return {
-      approxContextTokens: APPROX_CONTEXT_TOKENS,
+      approxContextTokens,
       approxPrefixTokens,
       approxCurrentWorkTokens,
       approxRemainingTokens,

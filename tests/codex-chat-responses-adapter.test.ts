@@ -57,6 +57,61 @@ test('codex responses bridge emits assistant text on delta path only', () => {
   assert.equal(synthetic.storedConversation.messages.at(-1)?.content, 'connected');
 });
 
+test('codex responses bridge compacts large tool outputs before replaying history', () => {
+  const largeOutput = 'tool-result-line\n'.repeat(5000);
+  const prepared = buildChatCompletionsRequest({
+    input: [
+      {
+        type: 'function_call_output',
+        call_id: 'call-large',
+        output: largeOutput,
+      },
+    ],
+    model: 'glm-5.1',
+  });
+
+  const toolMessage = prepared.chatRequest.messages.at(-1);
+  assert.equal(toolMessage?.role, 'tool');
+  assert.match(String(toolMessage?.content), /AgentServer compacted tool output for prompt/);
+  assert.ok(String(toolMessage?.content).length < largeOutput.length / 3);
+
+  const synthetic = buildSyntheticResponsesFromChatCompletion(
+    { model: 'glm-5.1' },
+    prepared,
+    {
+      model: 'glm-5.1',
+      choices: [
+        {
+          message: {
+            role: 'assistant',
+            content: 'noted',
+          },
+        },
+      ],
+      usage: {
+        prompt_tokens: 200,
+        completion_tokens: 10,
+        total_tokens: 210,
+      },
+    },
+  );
+  const replay = buildChatCompletionsRequest(
+    {
+      input: [{ type: 'message', role: 'user', content: 'follow up' }],
+      model: 'glm-5.1',
+    },
+    synthetic.storedConversation,
+  );
+
+  const replayBody = JSON.stringify(replay.chatRequest.messages);
+  assert.equal(replayBody.includes(largeOutput.slice(0, 10_000)), false);
+  assert.ok(replayBody.length < largeOutput.length / 2);
+  assert.match(replayBody, /AgentServer compacted/);
+  const completed = synthetic.events.find((event) => event.event === 'response.completed');
+  assert.equal(completed?.data.response.usage.context_window_tokens, 200);
+  assert.equal(completed?.data.response.usage.usage_kind, 'per_request');
+});
+
 test('codex responses bridge resolves request-registered upstream by model', () => {
   registerCodexResponsesBridgeUpstream({
     model: 'openrouter/qwen-test',
