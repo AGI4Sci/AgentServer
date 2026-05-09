@@ -76,6 +76,7 @@ function sendStreamError(res: ServerResponse, err: unknown): void {
 
 const HTTP_TEXT_LIMIT = 8_000;
 const HTTP_EVENTS_LIMIT = 200;
+const STREAM_HEARTBEAT_INTERVAL_MS = Number(process.env.AGENT_SERVER_STREAM_HEARTBEAT_MS || 10_000);
 
 function clipText(value: unknown, limit = HTTP_TEXT_LIMIT): unknown {
   if (typeof value !== 'string' || value.length <= limit) return value;
@@ -146,10 +147,50 @@ export async function handleAgentServerRoutes(
         'Cache-Control': 'no-cache, no-transform',
         'Connection': 'keep-alive',
       });
+      res.flushHeaders?.();
+      let closed = false;
+      let lastEventAt = Date.now();
+      const startedAt = lastEventAt;
+      const backend = String(body.runtime?.backend || body.agent?.backend || 'backend');
+      const heartbeat = STREAM_HEARTBEAT_INTERVAL_MS > 0
+        ? setInterval(() => {
+          if (closed || res.destroyed) return;
+          const now = Date.now();
+          if (now - lastEventAt < STREAM_HEARTBEAT_INTERVAL_MS) return;
+          const idleMs = now - lastEventAt;
+          lastEventAt = now;
+          const event: SessionStreamEvent = {
+            type: 'status',
+            status: 'running',
+            message: `AgentServer ${backend} is still working; no backend event for ${Math.round(idleMs / 1000)}s.`,
+            raw: {
+              source: 'agentserver-stream-heartbeat',
+              backend,
+              elapsedMs: now - startedAt,
+              idleMs,
+            },
+          };
+          writeStreamEnvelope(res, { event });
+        }, STREAM_HEARTBEAT_INTERVAL_MS)
+        : undefined;
+      const emit = (event: SessionStreamEvent) => {
+        lastEventAt = Date.now();
+        writeStreamEnvelope(res, { event });
+      };
+      res.on('close', () => {
+        closed = true;
+        if (heartbeat) clearInterval(heartbeat);
+      });
+      emit({
+        type: 'status',
+        status: 'starting',
+        message: `AgentServer stream connected; dispatching ${backend}.`,
+        raw: { source: 'agentserver-stream', backend },
+      });
       try {
         const result = await service.runTask(body, {
           onEvent(event) {
-            writeStreamEnvelope(res, { event });
+            emit(event);
           },
         });
         if (result.agent.autonomy.enabled && result.agent.status === 'active') {
@@ -159,6 +200,8 @@ export async function handleAgentServerRoutes(
       } catch (err) {
         sendStreamError(res, err);
       } finally {
+        closed = true;
+        if (heartbeat) clearInterval(heartbeat);
         res.end();
       }
       return true;

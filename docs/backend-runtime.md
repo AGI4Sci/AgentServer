@@ -140,6 +140,8 @@ runtime: {
 
 backend 原生事件可以保存在 `raw` 字段中用于调试，但上层业务不应依赖 `raw`。
 
+HTTP `POST /api/agent-server/runs/stream` 必须持续输出用户可见进度。服务端会以 NDJSON `{ "event": SessionStreamEvent }` envelope 发送 backend 原生事件，并在连接建立时先发送 `status=starting`。如果 backend 一段时间没有产出原生事件，HTTP 层会按 `AGENT_SERVER_STREAM_HEARTBEAT_MS`（默认 10000ms，设为 0 可关闭）发送 `status=running` heartbeat，说明 AgentServer 仍在等待对应 backend。上层应用应展示这些 `status`/`tool-call`/`tool-result`/`text-delta`/`usage-update` 事件，而不是把沉默连接解释为无进展。
+
 ## Unified Tool Primitives
 
 AgentServer shared tool bridge 提供一组 canonical tool primitive。完整列表和功能说明见 [Public API / Canonical Tool Primitives](./public-api.md#canonical-tool-primitives)。

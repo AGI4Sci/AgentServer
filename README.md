@@ -54,6 +54,7 @@ AgentServer 的定位是第三条路：**复用原生 agent backend 的完整能
 
 - **状态透明的 SDK/API**  
   上层通过 `runTask(...)`、HTTP API 或 service API 调用，不需要理解每个 backend 的私有协议。事件统一为 `status`、`text-delta`、`tool-call`、`tool-result`、`permission-request`、`stage-result`、`result`、`error`。
+  HTTP stream 端点会在连接建立时发送 `status=starting`，并在 backend 长时间没有原生事件时按 `AGENT_SERVER_STREAM_HEARTBEAT_MS` 发送 `status=running` heartbeat，方便上层 UI 展示真实工作过程和等待状态。
 
 - **长期上下文和恢复**  
   AgentServer Core 持有 Agent、Session、ContextItem、Run、Stage、Artifact 等统一对象，支持 handoff packet、context refs、workspace facts、run history、snapshot、compaction、recovery 和 audit。
